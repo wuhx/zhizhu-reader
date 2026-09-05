@@ -1,0 +1,63 @@
+name: Deploy Pages
+
+# Redeploys whenever anything lands on main — in particular the bundle the
+# generator in the zhizhu repo pushes here after each crawl.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Stage site
+        run: |
+          mkdir -p _site
+          cp -R index.html manifest.json sw.js assets data _site/
+          [ -d feed ] && cp -R feed _site/ || true
+          touch _site/.nojekyll
+
+      # sw.js serves the core assets stale-while-revalidate and its activate
+      # handler only evicts caches under a *different* name, so the key has to
+      # move whenever those assets do. Deriving it here rather than in a local
+      # Justfile means it is right however the commit was pushed. sw.js itself is
+      # part of the input, with its own CACHE_NAME line stripped, so a change to
+      # the caching logic busts the cache too.
+      #
+      # The bundle is deliberately *not* part of this hash: every file under
+      # data/ is immutable and addressed by a name that is never reused, so a
+      # publish must not evict the app shell or the articles already cached.
+      - name: Stamp service worker cache key
+        run: |
+          key="zhizhu-cache-$(cat _site/index.html _site/assets/app.js _site/assets/style.css \
+            <(sed '/^const CACHE_NAME/d' _site/sw.js) | sha256sum | cut -c1-8)"
+          sed -i "s|^const CACHE_NAME = '.*';|const CACHE_NAME = '$key';|" _site/sw.js
+          echo "zhizhu: service worker cache key $key"
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

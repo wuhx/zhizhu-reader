@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>zhizhu</title>
+<meta name="description" content="A reader over the zhizhu article archive.">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f7cff'/%3E%3Cpath d='M32 12v40M12 32h40M18 18l28 28M46 18 18 46' stroke='%23fff' stroke-width='4' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23fff'/%3E%3C/svg%3E">
+<script>
+try {
+  var t = localStorage.getItem('zhizhu.theme') ||
+    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.dataset.theme = t;
+} catch (e) {}
+
+// Update detection, wired up here rather than in app.js because both signals
+// can land before app.js has finished loading.
+//
+// The deploy stamps a new CACHE_NAME into sw.js whenever a core asset changes,
+// so a new build always means a new worker: it installs, claims this page, and
+// controllerchange fires while we're still running the old code — that is the
+// dependable signal. (A plain reload can't be trusted to re-request app.js at
+// all; Chrome will serve it from the memory cache without consulting the
+// worker.) The message is the belt-and-braces path for a long-open tab.
+window.zhizhuUpdateReady = false;
+if ('serviceWorker' in navigator) {
+  var hadController = !!navigator.serviceWorker.controller;
+  var flag = function () {
+    window.zhizhuUpdateReady = true;
+    document.dispatchEvent(new Event('zhizhu-update'));
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    // On a first visit there is no previous controller — that's this page's own
+    // worker arriving, not a new build.
+    if (hadController) flag();
+  });
+  navigator.serviceWorker.addEventListener('message', function (e) {
+    if (e.data && e.data.type === 'zhizhu-update') flag();
+  });
+}
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div id="app">
+
+  <aside id="sidebar">
+    <div class="wordmark">
+      <svg class="wordmark-icon" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="var(--accent)"/><path d="M32 12v40M12 32h40M18 18l28 28M46 18 18 46" stroke="#fff" stroke-width="4" stroke-linecap="round"/><circle cx="32" cy="32" r="7" fill="#fff"/></svg>
+      <span>zhizhu</span>
+    </div>
+    <nav id="nav" aria-label="Publishers"></nav>
+    <div class="sidebar-footer">
+      <button id="sync-btn" class="icon-btn" title="Sync" aria-label="Sync">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
+      </button>
+      <button id="theme-toggle" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.4"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3L17 7M7 17l-1.7 1.7"/></svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6Z"/></svg>
+      </button>
+      <button id="help-btn" class="icon-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <section id="timeline">
+    <header class="pane-header">
+      <div class="pane-header-row">
+        <button id="menu-btn" class="icon-btn" title="Publishers" aria-label="Show publishers">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9.5 4v16"/></svg>
+        </button>
+        <div class="search-wrap">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20.5 20.5-4.9-4.9"/></svg>
+          <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search articles">
+        </div>
+      </div>
+      <div id="timeline-meta" class="pane-subhead"></div>
+    </header>
+    <div id="cards" role="list"></div>
+  </section>
+
+  <article id="reader">
+    <header class="pane-header reader-toolbar">
+      <button id="back-btn" class="icon-btn" title="Back" aria-label="Back to list">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+      </button>
+      <div class="reader-actions">
+        <button id="star-btn" class="icon-btn" title="Star (s)" aria-label="Star">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9Z"/></svg>
+        </button>
+        <a id="original-btn" class="icon-btn" target="_blank" rel="noopener noreferrer" title="Open original (o)" aria-label="Open original">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4 10.5 13.5"/><path d="M18 14v5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 19V8a1.5 1.5 0 0 1 1.5-1.5H10"/></svg>
+        </a>
+      </div>
+    </header>
+    <div id="reader-scroll">
+      <div id="article" hidden></div>
+      <div id="reader-empty">
+        <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 12v40M12 32h40M18 18l28 28M46 18 18 46" stroke-width="4" fill="none" stroke-linecap="round"/><circle cx="32" cy="32" r="7"/></svg>
+        <p>No article selected</p>
+        <p class="hint">Pick something from the timeline — or use <kbd>j</kbd>/<kbd>k</kbd> to move around.</p>
+      </div>
+    </div>
+  </article>
+
+</div>
+<div id="scrim"></div>
+
+<dialog id="help">
+  <h2>Keyboard</h2>
+  <dl>
+    <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next / previous article</dd>
+    <dt><kbd>Enter</kbd></dt><dd>Open the selected article</dd>
+    <dt><kbd>o</kbd></dt><dd>Open the original page</dd>
+    <dt><kbd>s</kbd></dt><dd>Star</dd>
+    <dt><kbd>u</kbd></dt><dd>Mark unread</dd>
+    <dt><kbd>/</kbd></dt><dd>Search</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Back to the list</dd>
+  </dl>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+
+<button id="update-pill" type="button" hidden>
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
+  Update available
+</button>
+<script src="assets/app.js"></script>
+</body>
+</html>
