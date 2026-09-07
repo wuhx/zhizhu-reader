@@ -43,6 +43,7 @@ const state = {
   read: new Set(),
   starred: new Set(),
   query: '',
+  feedErrors: [],
 };
 
 // ---------------------------------------------------------------- storage --
@@ -304,12 +305,20 @@ async function refreshFeeds({ onProgress } = {}) {
   await dropMissing(new Set(outlines.map(o => o.key)), etags);
 
   let done = 0;
+  const failures = [];
   const queue = outlines.slice();
   const worker = async () => {
     for (let outline = queue.shift(); outline; outline = queue.shift()) {
       // One unreachable or malformed feed is not a failed refresh — the other
-      // twenty-five still have news.
-      try { await pullFeed(outline, etags); } catch (err) {}
+      // twenty-five still have news. It is still reported as a degraded sync,
+      // so a stale publisher never looks current by accident.
+      try {
+        await pullFeed(outline, etags);
+      } catch (err) {
+        const failure = new Error(`could not refresh feed ${outline.key}`, { cause: err });
+        failures.push(failure);
+        console.error(failure);
+      }
       done++;
       onProgress && onProgress(`Refreshing ${done}/${outlines.length}…`);
     }
@@ -318,6 +327,7 @@ async function refreshFeeds({ onProgress } = {}) {
 
   await idbPut('meta', etags, 'etags');
   await idbPut('meta', outlines, 'outlines');
+  state.feedErrors = failures;
   return idbAll('entries');
 }
 
@@ -340,13 +350,19 @@ function isStarred(id) { return state.starred.has(id); }
 
 async function setFlag(id, key, on) {
   const set = key === 'read' ? state.read : state.starred;
+  const wasOn = set.has(id);
   if (on) set.add(id); else set.delete(id);
-  const current = (await idbGet('flags', id)) || {};
-  current[key] = on;
-  if (!current.read && !current.starred) {
-    await tx('flags', 'readwrite', s => s.delete(id));
-  } else {
-    await idbPut('flags', current, id);
+  try {
+    const current = (await idbGet('flags', id)) || {};
+    current[key] = on;
+    if (!current.read && !current.starred) {
+      await tx('flags', 'readwrite', s => s.delete(id));
+    } else {
+      await idbPut('flags', current, id);
+    }
+  } catch (err) {
+    if (wasOn) set.add(id); else set.delete(id);
+    throw new Error(`could not persist ${key} for article ${id}`, { cause: err });
   }
 }
 
@@ -484,7 +500,11 @@ function navRow(view, label, count, publisherId) {
   }
   row.addEventListener('click', () => {
     state.view = view;
-    try { localStorage.setItem(LS.view, JSON.stringify(view)); } catch (e) {}
+    try {
+      localStorage.setItem(LS.view, JSON.stringify(view));
+    } catch (err) {
+      console.warn('Could not save the selected view.', err);
+    }
     document.body.classList.remove('sidebar-open');
     applyView();
   });
@@ -500,9 +520,13 @@ function renderTimeline() {
   state.rendered += slice.length;
 
   const meta = $('#timeline-meta');
-  meta.textContent = state.filtered.length
+  const count = state.filtered.length
     ? `${state.filtered.length} article${state.filtered.length === 1 ? '' : 's'}`
     : '';
+  const degraded = state.feedErrors.length
+    ? `${state.feedErrors.length} feed${state.feedErrors.length === 1 ? '' : 's'} unavailable`
+    : '';
+  meta.textContent = [count, degraded].filter(Boolean).join(' · ');
 
   if (!state.filtered.length) {
     const empty = el('div', 'empty');
@@ -535,23 +559,21 @@ function card(entry) {
   if (isRead(entry.id)) node.classList.add('is-read');
   if (state.selected === entry.id) node.classList.add('is-selected');
 
-  const head = el('div', 'card-head');
-  head.appendChild(monogram(entry.p));
-  const who = el('span', 'card-pub');
-  who.textContent = publisherName(entry.p);
-  head.appendChild(who);
-  const when = el('time', 'card-time');
-  when.textContent = relTime(entry.pub || entry.disc);
-  head.appendChild(when);
-  if (isStarred(entry.id)) {
-    const star = el('span', 'card-star');
-    star.textContent = '★';
-    head.appendChild(star);
-  }
-  node.appendChild(head);
-
   const body = el('div', 'card-body');
   const text = el('div', 'card-text');
+  const starred = isStarred(entry.id);
+  const star = el('button', 'card-star-btn' + (starred ? ' starred' : ''));
+  star.type = 'button';
+  star.title = 'Star (s)';
+  star.setAttribute('aria-label', 'Star article');
+  star.setAttribute('aria-pressed', String(starred));
+  star.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9Z"/></svg>';
+  star.addEventListener('click', event => {
+    event.stopPropagation();
+    runAction(toggleStar(entry.id), 'Could not update the star.');
+  });
+  text.appendChild(star);
+
   const title = el('h3', 'card-title');
   title.textContent = entry.t || '(untitled)';
   text.appendChild(title);
@@ -572,7 +594,10 @@ function card(entry) {
     thumb.alt = '';
     thumb.loading = 'lazy';
     thumb.referrerPolicy = 'no-referrer';
-    thumb.addEventListener('error', () => thumb.remove());
+    thumb.addEventListener('error', () => {
+      console.warn(`Could not load the thumbnail for article ${entry.id}.`);
+      thumb.remove();
+    });
     // The last word on whether this is a cover or a logo. The cover is only the
     // first image in the body, which for plenty of publishers is a masthead or
     // a tracking pixel — here the browser has measured it, so no guessing from
@@ -584,9 +609,21 @@ function card(entry) {
   }
   node.appendChild(body);
 
-  node.addEventListener('click', () => open(entry.id));
+  const when = entry.pub || entry.disc;
+  if (when) {
+    const time = el('time', 'card-time');
+    time.textContent = relTime(when);
+    time.dateTime = when;
+    time.title = new Date(when).toLocaleDateString();
+    node.appendChild(time);
+  }
+
+  node.addEventListener('click', () => runAction(open(entry.id), 'Could not open this article.'));
   node.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); open(entry.id); }
+    if (e.target === node && e.key === 'Enter') {
+      e.preventDefault();
+      runAction(open(entry.id), 'Could not open this article.');
+    }
   });
   return node;
 }
@@ -645,7 +682,11 @@ async function open(id) {
   if (!entry) return;
 
   state.selected = id;
-  try { localStorage.setItem(LS.sel, id); } catch (e) {}
+  try {
+    localStorage.setItem(LS.sel, id);
+  } catch (err) {
+    console.warn('Could not save the selected article.', err);
+  }
   for (const node of document.querySelectorAll('.card')) {
     node.classList.toggle('is-selected', node.dataset.id === id);
   }
@@ -670,7 +711,6 @@ async function open(id) {
     if (node) node.classList.add('is-read');
     renderNav();
   }
-  syncStarButton();
 }
 
 function articleView(entry, html) {
@@ -682,16 +722,28 @@ function articleView(entry, html) {
   header.appendChild(title);
 
   const meta = el('div', 'article-meta');
-  meta.appendChild(document.createTextNode(publisherName(entry.p)));
+  const appendMeta = node => {
+    if (meta.childNodes.length) meta.appendChild(document.createTextNode(' · '));
+    meta.appendChild(node);
+  };
+  appendMeta(document.createTextNode(publisherName(entry.p)));
   const when = entry.pub || entry.disc;
   if (when) {
     const time = el('time');
     time.textContent = new Date(when).toLocaleDateString(undefined,
       { year: 'numeric', month: 'long', day: 'numeric' });
-    meta.appendChild(document.createTextNode(' · '));
-    meta.appendChild(time);
+    appendMeta(time);
   }
-  if (entry.mins) meta.appendChild(document.createTextNode(` · ${entry.mins} min`));
+  if (entry.url) {
+    const original = el('a', 'article-original');
+    original.href = entry.url;
+    original.target = '_blank';
+    original.rel = 'noopener noreferrer';
+    original.title = 'Open original (o)';
+    original.textContent = 'Open original ↗';
+    appendMeta(original);
+  }
+  if (entry.mins) appendMeta(document.createTextNode(`${entry.mins} min`));
   header.appendChild(meta);
   wrap.appendChild(header);
 
@@ -701,18 +753,23 @@ function articleView(entry, html) {
   return wrap;
 }
 
-function syncStarButton() {
-  const btn = $('#star-btn');
-  btn.classList.toggle('on', !!(state.selected && isStarred(state.selected)));
+async function toggleStar(id) {
+  await setFlag(id, 'starred', !isStarred(id));
+  applyView();
+}
 
-  // Straight off the entry. The feed's <link> honours the source's original_url,
-  // so for an `mp` article this is the archived capture rather than a WeChat
-  // page that will not load.
-  const original = $('#original-btn');
-  const entry = state.selected ? state.byId.get(state.selected) : null;
-  const url = entry && entry.url;
-  original.style.visibility = url ? 'visible' : 'hidden';
-  original.href = url || '#';
+async function markUnread(id) {
+  await setFlag(id, 'read', false);
+  const node = document.querySelector(`.card[data-id="${id}"]`);
+  if (node) node.classList.remove('is-read');
+  renderNav();
+}
+
+function runAction(action, message) {
+  Promise.resolve(action).catch(err => {
+    console.error(message, err);
+    $('#timeline-meta').textContent = message;
+  });
 }
 
 // ------------------------------------------------------------------- input --
@@ -734,7 +791,7 @@ function move(delta) {
 }
 
 function wireKeys() {
-  document.addEventListener('keydown', async e => {
+  document.addEventListener('keydown', e => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
     if (e.key === '/' && !typing) { e.preventDefault(); $('#search').focus(); return; }
     if (typing) {
@@ -746,27 +803,27 @@ function wireKeys() {
     switch (e.key) {
       case 'j': case 'ArrowDown': e.preventDefault(); move(1); break;
       case 'k': case 'ArrowUp': e.preventDefault(); move(-1); break;
-      case 'Enter': if (state.selected) { e.preventDefault(); open(state.selected); } break;
+      case 'Enter':
+        if (state.selected) {
+          e.preventDefault();
+          runAction(open(state.selected), 'Could not open this article.');
+        }
+        break;
       case 'Escape': document.body.classList.remove('reader-open'); break;
       case 'o': {
         if (!state.selected) break;
-        const href = $('#original-btn').href;
-        if (href && href !== '#') window.open(href, '_blank', 'noopener');
+        const entry = state.byId.get(state.selected);
+        if (entry && entry.url) window.open(entry.url, '_blank', 'noopener');
         break;
       }
       case 's': {
         if (!state.selected) break;
-        await setFlag(state.selected, 'starred', !isStarred(state.selected));
-        syncStarButton();
-        applyView();
+        runAction(toggleStar(state.selected), 'Could not update the star.');
         break;
       }
       case 'u': {
         if (!state.selected) break;
-        await setFlag(state.selected, 'read', false);
-        const node = document.querySelector(`.card[data-id="${state.selected}"]`);
-        if (node) node.classList.remove('is-read');
-        renderNav();
+        runAction(markUnread(state.selected), 'Could not mark this article unread.');
         break;
       }
     }
@@ -782,14 +839,11 @@ function wireChrome() {
   $('#theme-toggle').addEventListener('click', () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
-    try { localStorage.setItem(LS.theme, next); } catch (e) {}
-  });
-
-  $('#star-btn').addEventListener('click', async () => {
-    if (!state.selected) return;
-    await setFlag(state.selected, 'starred', !isStarred(state.selected));
-    syncStarButton();
-    applyView();
+    try {
+      localStorage.setItem(LS.theme, next);
+    } catch (err) {
+      console.warn('Could not save the selected theme.', err);
+    }
   });
 
   let timer = null;
@@ -820,7 +874,10 @@ async function refresh({ manual = false } = {}) {
     state.byId = new Map(state.entries.map(e => [e.id, e]));
     applyView();
   } catch (err) {
-    if (manual) $('#timeline-meta').textContent = 'Could not reach the server.';
+    console.error('Could not refresh the feeds.', err);
+    $('#timeline-meta').textContent = manual
+      ? 'Could not reach the server.'
+      : 'Could not refresh the feeds.';
   } finally {
     btn.classList.remove('spinning');
   }
@@ -833,7 +890,9 @@ async function boot() {
   try {
     const saved = JSON.parse(localStorage.getItem(LS.view) || 'null');
     if (saved && saved.kind) state.view = saved;
-  } catch (e) {}
+  } catch (err) {
+    console.warn('Could not restore the selected view.', err);
+  }
 
   await loadFlags();
 
@@ -855,7 +914,12 @@ async function boot() {
 
   await refresh();
 
-  const last = localStorage.getItem(LS.sel);
+  let last = null;
+  try {
+    last = localStorage.getItem(LS.sel);
+  } catch (err) {
+    console.warn('Could not restore the selected article.', err);
+  }
   if (last && state.byId.has(last)) {
     state.selected = last;
     for (const node of document.querySelectorAll('.card')) {
@@ -866,7 +930,7 @@ async function boot() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').then(() => {
       navigator.serviceWorker.controller?.postMessage({ type: 'zhizhu-hello' });
-    }).catch(() => {});
+    }).catch(err => console.error('Could not register the service worker.', err));
   }
 
   // A tab left open picks up new articles when it is looked at again rather
@@ -876,4 +940,7 @@ async function boot() {
   });
 }
 
-boot();
+boot().catch(err => {
+  console.error('Could not start the reader.', err);
+  $('#timeline-meta').textContent = 'Could not start the reader.';
+});
