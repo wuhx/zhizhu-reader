@@ -1,0 +1,18 @@
+User request
+
+Reference the Airss reader layout: move each article's star control into the second-column article list, remove the RSS name and icon from those cards, move “Open original” below the title after the publication date, remove the old detail-header action row, analyze why some article details have no images, then commit and deploy the result.
+
+Implementation
+
+- Reworked article cards so the star is an accessible per-card button, the publisher chrome is removed, and the relative publication time appears below the card content.
+- Moved the original-article link into the detail metadata immediately after the publication date, while retaining the keyboard shortcut and the mobile back control.
+- Added explicit persistence rollback and visible/logged handling for feed, storage, service-worker, and asynchronous UI failures.
+- Confirmed the missing-image behavior is data-dependent: the reader renders inline feed images, while the current upstream RSS omits catalog cover_img data and some article bodies contain no img element.
+
+Validation
+
+- node --check assets/app.js
+- git diff --check
+- git diff --cached --check
+- Reviewed the staged patch and scanned added lines for common credential patterns.
+- Loaded the site locally against the live feeds: verified 280 entries, per-card star toggling without article navigation, detail metadata ordering, mobile back navigation, and rendering for an entry whose RSS content includes inline images.
