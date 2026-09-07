@@ -1,7 +1,8 @@
 name: Deploy Pages
 
-# Redeploys whenever anything lands on main — in particular the bundle the
-# generator in the zhizhu repo pushes here after each crawl.
+# Redeploys whenever anything lands on main. Content no longer arrives this way:
+# the reader fetches the feeds, so a deploy is only ever a change to the app or
+# to feeds.opml.
 on:
   push:
     branches: [main]
@@ -25,8 +26,11 @@ jobs:
       - name: Stage site
         run: |
           mkdir -p _site
-          cp -R index.html manifest.json sw.js assets data _site/
-          [ -d feed ] && cp -R feed _site/ || true
+          cp -R index.html manifest.json sw.js feeds.opml assets _site/
+          # The bundle is dead weight the reader no longer reads, kept published
+          # only as a fallback while the feed path proves itself. Drop this line
+          # and the directory together.
+          [ -d data ] && cp -R data _site/ || true
           touch _site/.nojekyll
 
       # sw.js serves the core assets stale-while-revalidate and its activate
@@ -36,13 +40,13 @@ jobs:
       # part of the input, with its own CACHE_NAME line stripped, so a change to
       # the caching logic busts the cache too.
       #
-      # The bundle is deliberately *not* part of this hash: every file under
-      # data/ is immutable and addressed by a name that is never reused, so a
-      # publish must not evict the app shell or the articles already cached.
+      # feeds.opml is in the hash because it is app state rather than content:
+      # adding a publisher has to reach every reader, and it reaches them by the
+      # cache key moving.
       - name: Stamp service worker cache key
         run: |
           key="zhizhu-cache-$(cat _site/index.html _site/assets/app.js _site/assets/style.css \
-            <(sed '/^const CACHE_NAME/d' _site/sw.js) | sha256sum | cut -c1-8)"
+            _site/feeds.opml <(sed '/^const CACHE_NAME/d' _site/sw.js) | sha256sum | cut -c1-8)"
           sed -i "s|^const CACHE_NAME = '.*';|const CACHE_NAME = '$key';|" _site/sw.js
           echo "zhizhu: service worker cache key $key"
 

@@ -2,12 +2,26 @@
 
 // The reader. Three panes: publishers, a timeline, an article.
 //
-// The catalog arrives as an append-only log and is materialized into IndexedDB
-// once; every view after that is a local query. There is no pagination, no
-// per-feed fetch and no search index — the whole index is already here.
+// An ordinary feed reader. The subscription list is feeds.opml, shipped with the
+// app and authoritative on every load; the articles are standard RSS, bodies and
+// all. Every item is materialized into IndexedDB once, so every view after that
+// is a local query — no pagination, no fetch when an article is opened, and no
+// search index to build or keep in step.
 
-const DATA = 'data/';
-const HEAD_URL = DATA + 'head.json';
+const OPML_URL = 'feeds.opml';
+
+// Feeds in flight at once. Enough to hide the latency of two dozen requests on a
+// cold load, few enough that one tab does not look like an attack.
+const FETCH_CONCURRENCY = 4;
+
+// Characters a minute. Taken from the ratio the old generator used, and wrong in
+// the same direction for every article — which is all a reading estimate has to
+// be.
+const CHARS_PER_MIN = 400;
+
+// The feed carries a <description> for some publishers and not others, so an
+// excerpt often has to come off the front of the body.
+const EXCERPT_CHARS = 300;
 
 // Rows rendered before handing the rest to an IntersectionObserver. Enough to
 // fill any viewport twice over, so the sentinel is never visible on arrival.
@@ -18,7 +32,7 @@ const EXCERPT_FADE = 220;
 const LS = { theme: 'zhizhu.theme', view: 'zhizhu.view', sel: 'zhizhu.sel' };
 
 const state = {
-  head: null,
+  outlines: [],       // the subscription list, in the order feeds.opml gives it
   entries: [],        // the whole catalog, newest first
   byId: new Map(),
   publishers: {},
@@ -26,7 +40,6 @@ const state = {
   filtered: [],
   rendered: 0,
   selected: null,
-  doc: null,           // the article currently open, so the toolbar needs no refetch
   read: new Set(),
   starred: new Set(),
   query: '',
@@ -39,21 +52,34 @@ const state = {
 // that airss-reader had to cap with a 5000-entry FIFO.
 
 const DB_NAME = 'zhizhu';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbPromise = null;
 
 function db() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const open = indexedDB.open(DB_NAME, DB_VERSION);
-    open.onupgradeneeded = () => {
+    open.onupgradeneeded = event => {
       const d = open.result;
-      // The materialized catalog: one record per article, keyed by id.
+      // The materialized catalog: one record per article, keyed by the feed's
+      // guid.
       if (!d.objectStoreNames.contains('entries')) d.createObjectStore('entries', { keyPath: 'id' });
+      // Bodies, in a store of their own. Boot reads every entry to draw the
+      // timeline, so folding a couple of megabytes of article HTML into those
+      // records would mean deserializing all of it to render a list of titles.
+      if (!d.objectStoreNames.contains('bodies')) d.createObjectStore('bodies');
       // Per-article reading state. Never sent anywhere; this is the whole of it.
       if (!d.objectStoreNames.contains('flags')) d.createObjectStore('flags');
-      // Sync cursor and the last head we applied.
+      // Per-feed ETags, and the last subscription list we saw.
       if (!d.objectStoreNames.contains('meta')) d.createObjectStore('meta');
+
+      // v1 held the bundle's catalog and its log cursor, and neither means
+      // anything now. Flags are deliberately spared: a feed's guid is the same
+      // id the bundle used, so read and starred survive the change of source.
+      if (event.oldVersion === 1) {
+        open.transaction.objectStore('entries').clear();
+        open.transaction.objectStore('meta').clear();
+      }
     };
     open.onsuccess = () => resolve(open.result);
     open.onerror = () => reject(open.error);
@@ -85,71 +111,214 @@ const idbAll = store => tx(store, 'readonly', s => s.getAll());
 
 // ------------------------------------------------------------------- sync --
 
-async function fetchJSON(url, options) {
-  const res = await fetch(url, options);
-  if (!res.ok) throw new Error(`${res.status} ${url}`);
-  return res.json();
+const NS = {
+  content: 'http://purl.org/rss/1.0/modules/content/',
+  dc: 'http://purl.org/dc/elements/1.1/',
+};
+
+function parseXML(text, what) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  // DOMParser reports a malformed document by handing back one describing the
+  // failure, rather than by throwing.
+  if (doc.querySelector('parsererror')) throw new Error(`malformed ${what}`);
+  return doc;
 }
 
-function seqName(n) {
-  return String(n).padStart(6, '0') + '.json';
+const tagText = (node, tag) => {
+  const found = node.getElementsByTagName(tag)[0];
+  return found ? found.textContent.trim() : '';
+};
+
+const tagTextNS = (node, ns, tag) => {
+  const found = node.getElementsByTagNameNS(ns, tag)[0];
+  return found ? found.textContent.trim() : '';
+};
+
+// pubDate is RFC 822 and dc:date is ISO 8601. The timeline sorts by string
+// comparison, so both have to come out in the same shape or the two kinds of
+// date never order against each other.
+function isoDate(value) {
+  if (!value) return '';
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? '' : new Date(at).toISOString();
 }
 
 /**
- * Bring the local catalog up to the published head.
+ * The subscription list, and the whole of it.
  *
- * The same walk the generator's `replay` does, and deliberately so: a snapshot
- * is only ever what a correct client would already be holding, so the two
- * cannot disagree about what the catalog contains.
+ * Shipped with the app and authoritative on every load, so a new publisher
+ * arrives with a deploy and there is nothing local to reconcile it against — no
+ * seed-versus-live problem, no add-feed UI, and no feed fetched that this file
+ * did not name.
  */
-async function sync({ onProgress } = {}) {
-  const head = await fetchJSON(HEAD_URL, { cache: 'no-store' });
-  const local = (await idbGet('meta', 'cursor')) || { seq: 0, epoch: null };
+async function loadOutlines() {
+  const res = await fetch(OPML_URL, { cache: 'no-cache' });
+  if (!res.ok) throw new Error(`${res.status} ${OPML_URL}`);
+  const doc = parseXML(await res.text(), 'OPML');
 
-  let cursor = local.seq;
-  let entries = new Map();
-
-  // A new epoch means the publisher changed the shape of the bundle out from
-  // under us, so nothing local can be trusted incrementally.
-  const stale = local.epoch && head.epoch && local.epoch !== head.epoch;
-  if (!stale && cursor >= head.snapshot) {
-    for (const entry of await idbAll('entries')) entries.set(entry.id, entry);
-  } else if (head.snapshot) {
-    onProgress && onProgress('Loading catalog…');
-    const snap = await fetchJSON(`${DATA}snapshot/${seqName(head.snapshot)}`);
-    for (const entry of snap.entries) entries.set(entry.id, entry);
-    cursor = head.snapshot;
-  } else {
-    cursor = 0;
+  const outlines = [];
+  for (const node of doc.querySelectorAll('outline[xmlUrl]')) {
+    const xmlUrl = node.getAttribute('xmlUrl');
+    // The feed's own file name, which is short, stable, and already what
+    // monogram() hashes for a publisher's colour.
+    const key = new URL(xmlUrl, location.href).pathname
+      .replace(/^.*\//, '').replace(/\.xml$/i, '');
+    if (!key) continue;
+    outlines.push({
+      key,
+      xmlUrl,
+      title: node.getAttribute('text') || node.getAttribute('title') || key,
+    });
   }
+  return outlines;
+}
 
-  for (let seq = cursor + 1; seq <= head.latest; seq++) {
-    onProgress && onProgress(`Syncing ${seq}/${head.latest}…`);
-    let log;
-    try {
-      log = await fetchJSON(`${DATA}log/${seqName(seq)}`);
-    } catch {
-      // Pruned below a snapshot we have already applied. Not an error: the
-      // snapshot subsumed it.
-      continue;
+/**
+ * Turn one RSS item into the entry the timeline renders and the body it opens.
+ *
+ * Everything the old bundle carried and the feed does not — the excerpt, a cover
+ * image, the reading estimate — is derived here, once, when the item first
+ * arrives, rather than on every render.
+ */
+function materialize(item, feedKey) {
+  const html = tagTextNS(item, NS.content, 'encoded');
+
+  // One parse for both the plain text and the cover. A template's content is
+  // inert: no image is fetched and no script runs.
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const plain = (tpl.content.textContent || '').replace(/\s+/g, ' ').trim();
+  const cover = tpl.content.querySelector('img[src]');
+
+  const entry = {
+    id: tagText(item, 'guid'),
+    t: tagText(item, 'title'),
+    p: feedKey,
+    url: tagText(item, 'link'),
+    pub: isoDate(tagTextNS(item, NS.dc, 'date')),
+    disc: isoDate(tagText(item, 'pubDate')),
+    ex: tagText(item, 'description') || plain.slice(0, EXCERPT_CHARS),
+    mins: Math.max(1, Math.round(plain.length / CHARS_PER_MIN)),
+    tags: [...item.getElementsByTagName('category')]
+      .map(n => n.textContent.trim()).filter(Boolean),
+  };
+  if (cover) entry.img = cover.getAttribute('src');
+  return { entry, html };
+}
+
+function store(items) {
+  if (!items.length) return Promise.resolve();
+  return db().then(d => new Promise((resolve, reject) => {
+    const t = d.transaction(['entries', 'bodies'], 'readwrite');
+    const entries = t.objectStore('entries');
+    const bodies = t.objectStore('bodies');
+    for (const { entry, html } of items) {
+      entries.put(entry);
+      bodies.put(html, entry.id);
     }
-    for (const entry of log.put || []) entries.set(entry.id, entry);
-    for (const id of log.del || []) entries.delete(id);
-  }
-
-  await db().then(d => new Promise((resolve, reject) => {
-    const t = d.transaction(['entries', 'meta'], 'readwrite');
-    const store = t.objectStore('entries');
-    store.clear();
-    for (const entry of entries.values()) store.put(entry);
-    t.objectStore('meta').put({ seq: head.latest, epoch: head.epoch }, 'cursor');
     t.oncomplete = resolve;
     t.onerror = () => reject(t.error);
   }));
+}
 
-  state.head = head;
-  state.publishers = head.publishers || {};
-  return entries;
+/**
+ * Cloudflare weakens an ETag whenever it gzips the response — which, for a
+ * browser, is always — but compares If-None-Match by exact string rather than
+ * by the weak comparison the RFC asks for. Echo back the `W/"…"` it just sent
+ * and it answers 200 with the whole body; send the strong form the Worker
+ * actually emitted and it answers 304.
+ *
+ * So the prefix is stripped on the way out. Nothing is lost by it: the strong
+ * form is the origin's own tag, and a genuinely weak match is exactly the case
+ * a feed reader wants to treat as unchanged anyway.
+ */
+const strongETag = tag => tag.replace(/^W\//, '');
+
+/**
+ * Fetch one feed and materialize it.
+ *
+ * `cache: 'no-store'` keeps the browser's own cache out of the conditional
+ * request, so an unchanged feed arrives here as a 304 rather than being turned
+ * back into a 200 from cache — which is what makes the ETag worth storing at
+ * all. The Worker allows if-none-match and exposes etag cross-origin, so a
+ * refresh that changed nothing costs a header exchange and no parsing.
+ */
+async function pullFeed(outline, etags) {
+  const headers = {};
+  if (etags[outline.key]) headers['If-None-Match'] = strongETag(etags[outline.key]);
+
+  const res = await fetch(outline.xmlUrl, { cache: 'no-store', headers });
+  if (res.status === 304) return;
+  if (!res.ok) throw new Error(`${res.status} ${outline.xmlUrl}`);
+
+  const doc = parseXML(await res.text(), 'feed');
+  const items = [];
+  for (const item of doc.getElementsByTagName('item')) {
+    const made = materialize(item, outline.key);
+    if (made.entry.id) items.push(made);
+  }
+  await store(items);
+
+  const tag = res.headers.get('ETag');
+  if (tag) etags[outline.key] = tag; else delete etags[outline.key];
+}
+
+/**
+ * Drop everything belonging to an outline that is no longer in the list.
+ *
+ * The only deletion path there is. An item ageing out of a feed's window is
+ * emphatically *not* one: a feed is the publisher's most recent N, not a
+ * statement about what exists, so treating absence as a delete would cap the
+ * local archive at whatever the feed happens to carry.
+ */
+async function dropMissing(live, etags) {
+  for (const key of Object.keys(etags)) if (!live.has(key)) delete etags[key];
+
+  const d = await db();
+  await new Promise((resolve, reject) => {
+    const t = d.transaction(['entries', 'bodies'], 'readwrite');
+    const bodies = t.objectStore('bodies');
+    const request = t.objectStore('entries').openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      if (!live.has(cursor.value.p)) {
+        bodies.delete(cursor.value.id);
+        cursor.delete();
+      }
+      cursor.continue();
+    };
+    t.oncomplete = resolve;
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/** Read the subscription list, then bring every feed in it up to date. */
+async function refreshFeeds({ onProgress } = {}) {
+  const outlines = await loadOutlines();
+  state.outlines = outlines;
+  state.publishers = {};
+  for (const outline of outlines) state.publishers[outline.key] = { n: outline.title };
+
+  const etags = (await idbGet('meta', 'etags')) || {};
+  await dropMissing(new Set(outlines.map(o => o.key)), etags);
+
+  let done = 0;
+  const queue = outlines.slice();
+  const worker = async () => {
+    for (let outline = queue.shift(); outline; outline = queue.shift()) {
+      // One unreachable or malformed feed is not a failed refresh — the other
+      // twenty-five still have news.
+      try { await pullFeed(outline, etags); } catch (err) {}
+      done++;
+      onProgress && onProgress(`Refreshing ${done}/${outlines.length}…`);
+    }
+  };
+  await Promise.all(Array.from({ length: FETCH_CONCURRENCY }, worker));
+
+  await idbPut('meta', etags, 'etags');
+  await idbPut('meta', outlines, 'outlines');
+  return idbAll('entries');
 }
 
 // ------------------------------------------------------------------ model --
@@ -281,8 +450,13 @@ function renderNav() {
     if (isRead(entry.id)) continue;
     counts.set(entry.p, (counts.get(entry.p) || 0) + 1);
   }
-  const publishers = [...new Set(state.entries.map(e => e.p))]
-    .sort((a, b) => publisherName(a).localeCompare(publisherName(b)));
+  // From the subscription list rather than from the entries, and in the order
+  // the file gives — so a newly added publisher has a row before its first
+  // article arrives, and the order of the sidebar is something you can edit.
+  const publishers = state.outlines.length
+    ? state.outlines.map(o => o.key)
+    : [...new Set(state.entries.map(e => e.p))]
+        .sort((a, b) => publisherName(a).localeCompare(publisherName(b)));
 
   const heading = el('div', 'nav-heading');
   heading.textContent = 'Publishers';
@@ -388,7 +562,6 @@ function card(entry) {
   }
   const foot = el('div', 'card-foot');
   if (entry.mins) foot.appendChild(chip(`${entry.mins} min`));
-  if (entry.q && entry.q !== 'ok') foot.appendChild(chip(entry.q, 'chip-warn'));
   for (const tag of (entry.tags || []).slice(0, 3)) foot.appendChild(chip(tag));
   if (foot.childNodes.length) text.appendChild(foot);
   body.appendChild(text);
@@ -400,10 +573,10 @@ function card(entry) {
     thumb.loading = 'lazy';
     thumb.referrerPolicy = 'no-referrer';
     thumb.addEventListener('error', () => thumb.remove());
-    // The last word on whether this is a cover or a logo. Some publishers point
-    // og:image at an 80x80 site mark, and the generator can only catch that
-    // when the archive happens to have stored the file — here the browser has
-    // measured it, so no guessing from the URL is needed.
+    // The last word on whether this is a cover or a logo. The cover is only the
+    // first image in the body, which for plenty of publishers is a masthead or
+    // a tracking pixel — here the browser has measured it, so no guessing from
+    // the URL is needed.
     thumb.addEventListener('load', () => {
       if (thumb.naturalWidth && thumb.naturalWidth < 200) thumb.remove();
     });
@@ -430,9 +603,9 @@ const sanitizer = (() => {
   const BLOCK = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'IFRAME', 'OBJECT',
     'EMBED', 'FORM', 'NOSCRIPT', 'TEMPLATE', 'BASE']);
 
-  // Defence in depth. The generator sanitizes too, and more thoroughly — this
-  // is here because the bundle is a static file that anything could be serving,
-  // and because a rule that runs on both sides costs almost nothing.
+  // Defence in depth. The feed generator sanitizes too, and more thoroughly —
+  // this is here because a feed is markup fetched from somewhere else, and
+  // because a rule that runs on both sides costs almost nothing.
   return function sanitize(html) {
     const tpl = document.createElement('template');
     tpl.innerHTML = html;
@@ -485,24 +658,11 @@ async function open(id) {
   holder.textContent = '';
   $('#reader-scroll').scrollTop = 0;
 
-  const loading = el('p', 'loading');
-  loading.textContent = 'Loading…';
-  holder.appendChild(loading);
-
-  let doc;
-  try {
-    doc = await fetchJSON(`${DATA}articles/${id}.json`);
-  } catch (err) {
-    holder.textContent = '';
-    const failed = el('p', 'loading');
-    failed.textContent = 'Could not load this article. It may not be cached for offline reading yet.';
-    holder.appendChild(failed);
-    return;
-  }
-
-  state.doc = doc;
+  // The body came down with the listing, so this is a local read and there is
+  // no offline case to apologise for: anything in the timeline is readable.
+  const html = await idbGet('bodies', id);
   holder.textContent = '';
-  holder.appendChild(articleView(doc, entry));
+  holder.appendChild(articleView(entry, html || ''));
 
   if (!isRead(id)) {
     await setFlag(id, 'read', true);
@@ -513,17 +673,17 @@ async function open(id) {
   syncStarButton();
 }
 
-function articleView(doc, entry) {
+function articleView(entry, html) {
   const wrap = el('div', 'article-inner');
 
   const header = el('header', 'article-head');
   const title = el('h1');
-  title.textContent = doc.title || '(untitled)';
+  title.textContent = entry.t || '(untitled)';
   header.appendChild(title);
 
   const meta = el('div', 'article-meta');
-  meta.appendChild(document.createTextNode(publisherName(doc.publisher)));
-  const when = doc.published_at || doc.discovered_at;
+  meta.appendChild(document.createTextNode(publisherName(entry.p)));
+  const when = entry.pub || entry.disc;
   if (when) {
     const time = el('time');
     time.textContent = new Date(when).toLocaleDateString(undefined,
@@ -531,29 +691,12 @@ function articleView(doc, entry) {
     meta.appendChild(document.createTextNode(' · '));
     meta.appendChild(time);
   }
-  if (entry && entry.mins) meta.appendChild(document.createTextNode(` · ${entry.mins} min`));
+  if (entry.mins) meta.appendChild(document.createTextNode(` · ${entry.mins} min`));
   header.appendChild(meta);
   wrap.appendChild(header);
 
-  // Said out loud rather than left for the reader to discover: a thin or poor
-  // extraction is usually a page the original view handles perfectly well.
-  if (doc.quality && doc.quality !== 'ok') {
-    const note = el('div', 'notice');
-    note.textContent = doc.quality === 'poor'
-      ? 'Not much text came out of this capture — the original page is likely to read better.'
-      : 'This extraction looks short. The original page may have more.';
-    const link = el('a');
-    link.href = doc.url;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Open original';
-    note.appendChild(document.createTextNode(' '));
-    note.appendChild(link);
-    wrap.appendChild(note);
-  }
-
   const body = el('div', 'article-body');
-  body.innerHTML = sanitizer(doc.html || '');
+  body.innerHTML = sanitizer(html);
   wrap.appendChild(body);
   return wrap;
 }
@@ -562,10 +705,12 @@ function syncStarButton() {
   const btn = $('#star-btn');
   btn.classList.toggle('on', !!(state.selected && isStarred(state.selected)));
 
-  // From the document already open, not a second fetch for it: `open` holds it,
-  // and the URL is the only thing this needs.
+  // Straight off the entry. The feed's <link> honours the source's original_url,
+  // so for an `mp` article this is the archived capture rather than a WeChat
+  // page that will not load.
   const original = $('#original-btn');
-  const url = state.doc && state.doc.id === state.selected ? state.doc.url : null;
+  const entry = state.selected ? state.byId.get(state.selected) : null;
+  const url = entry && entry.url;
   original.style.visibility = url ? 'visible' : 'hidden';
   original.href = url || '#';
 }
@@ -668,10 +813,10 @@ async function refresh({ manual = false } = {}) {
   const btn = $('#sync-btn');
   btn.classList.add('spinning');
   try {
-    const entries = await sync({
+    const entries = await refreshFeeds({
       onProgress: text => { $('#timeline-meta').textContent = text; },
     });
-    state.entries = sortEntries(entries.values());
+    state.entries = sortEntries(entries);
     state.byId = new Map(state.entries.map(e => [e.id, e]));
     applyView();
   } catch (err) {
@@ -693,18 +838,22 @@ async function boot() {
   await loadFlags();
 
   // Render whatever is already stored before touching the network, so a
-  // returning reader sees their timeline immediately and offline works.
+  // returning reader sees their timeline immediately and offline works. The
+  // outlines are kept alongside for the same reason: the sidebar needs its
+  // names before feeds.opml has been read again.
   const cached = await idbAll('entries');
-  const meta = await idbGet('meta', 'head');
+  const outlines = await idbGet('meta', 'outlines');
+  if (outlines) {
+    state.outlines = outlines;
+    for (const outline of outlines) state.publishers[outline.key] = { n: outline.title };
+  }
   if (cached.length) {
-    state.publishers = (meta && meta.publishers) || {};
     state.entries = sortEntries(cached);
     state.byId = new Map(state.entries.map(e => [e.id, e]));
     applyView();
   }
 
   await refresh();
-  if (state.head) await idbPut('meta', { publishers: state.head.publishers }, 'head');
 
   const last = localStorage.getItem(LS.sel);
   if (last && state.byId.has(last)) {
@@ -720,8 +869,8 @@ async function boot() {
     }).catch(() => {});
   }
 
-  // A publish lands as a new head.json, so a tab left open picks it up when it
-  // is looked at again rather than only on reload.
+  // A tab left open picks up new articles when it is looked at again rather
+  // than only on reload. Cheap: every unchanged feed answers 304.
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) refresh();
   });

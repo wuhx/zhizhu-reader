@@ -2,15 +2,18 @@
 // .github/workflows/deploy.yml, from the hash of the core assets. The value
 // committed here is only a placeholder — don't bother keeping it current.
 const CACHE_NAME = 'zhizhu-cache-00000000';
-const DATA_CACHE_NAME = 'zhizhu-data-v1';
 const IMG_CACHE_NAME = 'zhizhu-img-v1';
 const IMG_CACHE_LIMIT = 400;
 
+// feeds.opml is a core asset because it is app state, not content: adding a
+// publisher is a deploy, and the deploy's cache key covers this file, so the
+// new subscription list arrives with the new worker.
 const CORE_ASSETS = [
   './',
   './index.html',
   './assets/style.css',
-  './assets/app.js'
+  './assets/app.js',
+  './feeds.opml'
 ];
 
 // Absolute paths of the core assets, so the fetch handler can match on equality
@@ -36,7 +39,9 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('activate', event => {
-  const keep = new Set([CACHE_NAME, DATA_CACHE_NAME, IMG_CACHE_NAME]);
+  // The bundle's cache is deliberately not in here: nothing reads data/ any
+  // more, so leaving zhizhu-data-v1 out is what evicts it.
+  const keep = new Set([CACHE_NAME, IMG_CACHE_NAME]);
   event.waitUntil(
     caches.keys().then(keys => Promise.all(
       keys.map(key => keep.has(key) ? undefined : caches.delete(key))
@@ -107,39 +112,6 @@ async function staleWhileRevalidate(event) {
   return revalidate;
 }
 
-// head.json is the only file in the bundle that is ever rewritten, so it is the
-// only one worth asking the network about. cache: 'no-store' keeps Pages'
-// ten-minute max-age out of the way, which is the whole point of checking.
-async function networkFirst(event) {
-  try {
-    const res = await fetch(new Request(event.request, { cache: 'no-store' }));
-    if (res.ok) {
-      const cache = await caches.open(DATA_CACHE_NAME);
-      await cache.put(event.request, res.clone());
-    }
-    return res;
-  } catch (err) {
-    const cached = await caches.match(event.request);
-    if (cached) return cached;
-    throw err;
-  }
-}
-
-// Everything else under data/ is immutable by construction: a log, a snapshot
-// and an article file are written once under a name that is never reused. So a
-// hit is served without touching the network at all — not revalidated, not
-// conditionally fetched — and an article read once is readable offline forever.
-async function cacheFirstImmutable(event, cacheName) {
-  const cached = await caches.match(event.request, { cacheName });
-  if (cached) return cached;
-  const res = await fetch(event.request);
-  if (res.ok) {
-    const cache = await caches.open(cacheName);
-    await cache.put(event.request, res.clone());
-  }
-  return res;
-}
-
 async function cacheFirstImages(event) {
   const cached = await caches.match(event.request, { cacheName: IMG_CACHE_NAME });
   if (cached) return cached;
@@ -164,23 +136,20 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   // Match on our own paths only: an article can perfectly well link to
-  // someone else's /data/head.json.
+  // someone else's /assets/app.js.
   const ours = url.origin === self.location.origin;
-
-  if (ours && url.pathname.endsWith('/data/head.json')) {
-    event.respondWith(networkFirst(event));
-    return;
-  }
-
-  if (ours && url.pathname.includes('/data/')) {
-    event.respondWith(cacheFirstImmutable(event, DATA_CACHE_NAME));
-    return;
-  }
 
   if (event.request.mode === 'navigate' || (ours && CORE_PATHS.has(url.pathname))) {
     event.respondWith(staleWhileRevalidate(event));
     return;
   }
+
+  // Images, and nothing else. The feeds are cross-origin GETs too, and a
+  // catch-all that handed them to a cache-first strategy would pin the first
+  // copy of every feed forever — the reader would never see another article.
+  // Anything that is not an image is left alone, so app.js's own no-store and
+  // If-None-Match reach the network as written.
+  if (event.request.destination !== 'image') return;
 
   event.respondWith(cacheFirstImages(event).catch(() => Response.error()));
 });

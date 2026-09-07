@@ -12,7 +12,6 @@
   --line: #e6e5e1;
   --accent: #4f7cff;
   --accent-soft: #eaf0ff;
-  --warn: #b6541f;
   --shadow: 0 1px 2px rgba(0, 0, 0, .05);
   --radius: 10px;
   --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
@@ -30,7 +29,6 @@
   --line: #2b2b32;
   --accent: #7c9cff;
   --accent-soft: #23273a;
-  --warn: #e0925f;
   --shadow: none;
 }
 
@@ -287,7 +285,6 @@ button, input { font: inherit; color: inherit; }
 }
 
 [data-theme="dark"] .chip { background: var(--pane-2); }
-.chip-warn { color: var(--warn); }
 
 .card-thumb {
   flex: none;
@@ -334,18 +331,6 @@ button, input { font: inherit; color: inherit; }
 }
 
 .article-meta { font-size: 12.5px; color: var(--ink-3); }
-
-.notice {
-  margin-bottom: 22px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border-left: 3px solid var(--warn);
-  background: var(--pane-2);
-  font-size: 12.5px;
-  color: var(--ink-2);
-}
-
-.notice a { color: var(--accent); }
 
 .article-body {
   font-family: var(--serif);

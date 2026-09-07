@@ -1,82 +1,130 @@
 # zhizhu-reader
 
 The reading front end for the [zhizhu](https://github.com/wuhx/zhizhu) article
-archive, and the bundle it reads.
+archive.
 
-This repo is an **artifact**. Nothing here is edited by hand except the app
-shell — `index.html`, `sw.js`, `assets/` — and everything under `data/` is
-written by `reader/build.py` in the zhizhu repo, which holds the token and the
-extraction code. That split is deliberate: the generator is private, this is
-public, and no credential ever needs to be here.
+It is an ordinary feed reader. The subscription list is OPML, the content is RSS,
+and neither is a private format — this is a feed reader that happens to ship with
+zhizhu's feeds, not a client only zhizhu can serve. Everything here is edited by
+hand: `index.html`, `sw.js`, `assets/`, `feeds.opml`. There is no build step and
+no generator, so nothing about *content* needs a deploy.
 
 Live at https://wuhx.github.io/zhizhu-reader/
 
-## The bundle
+## The subscription list
 
-```
-data/
-  head.json              the only mutable file. ~1 KB, served no-cache
-  log/000137.json        one build's puts and deletes. immutable
-  snapshot/000120.json   every live entry as of that seq. immutable
-  articles/Ab3xY9zQ.json one article body. immutable, written once
-```
+`feeds.opml`, and that is the whole of it. It is authoritative on every load, so
+adding or removing a publisher is editing that file and deploying. The client
+cannot subscribe to anything on its own.
 
-**Nothing published is ever rewritten.** That single rule is why the catalog is
-a log rather than a file per publisher or a shard per month: changing one
-article would mean rewriting whatever file contains it, on every build, forever.
-It is also what RSS cannot do — a channel is rebuilt in full for one new item,
-and it has no way to say an article was edited or removed at all.
+Which settles several things at once. There is no seed-versus-live problem: the
+shipped file *is* the state, so a new publisher reaches every reader on the next
+deploy with no re-check logic and nothing to merge against local edits. There is
+no local subscription store, no add-feed UI and no import. And there is no
+third-party CORS problem, because only feeds named here are ever fetched — a
+hand-added outside feed would still have to permit cross-origin reads, which is a
+thing to check while editing the file rather than a promise the app makes.
 
-So a new article costs one ~1 KB append. A metadata edit to a two-year-old
-article costs the same ~1 KB append. `git diff` after a build shows the new log,
-the new article files, and one line of `head.json`.
+It does mean a deploy to add a publisher. That is the right trade: publishers
+change rarely and articles change constantly, so the rare thing goes in a deploy
+and the frequent thing stays a fetch.
 
-### How a client syncs
+Removing an outline drops its articles from the local catalog. Nothing else does
+— see the window, below.
 
-1. `GET data/head.json`
-2. if the local cursor is behind `head.snapshot` (or `epoch` changed), load that
-   snapshot and take its seq as the cursor
-3. fetch `data/log/{n}.json` for each n after the cursor, applying `put` and
-   `del` in order
-4. done — in the steady state that is one ~1 KB fetch
+## How a refresh works
 
-The index then lives in IndexedDB, so paging the timeline, filtering by
-publisher or tag, sorting and searching are all local. There is no pagination,
-no per-feed fetch, and no search index to build or keep in step.
+1. `GET feeds.opml`
+2. for each outline, `GET` the feed with `If-None-Match` from the ETag stored
+   last time
+3. materialize every item of every feed that actually changed
 
-Because every file except `head.json` is immutable, the service worker serves
-them cache-first and never revalidates: an article read once is readable offline
-forever.
+That is all of it. There is no head, no snapshot, no log and no sequence cursor,
+because a feed already carries the full article body in `<content:encoded>` —
+so the listing and the reading come down together and opening an article touches
+no network at all.
+
+Cold, that is 26 feeds and about **950 KB** for ~280 articles. Warm, every feed
+answers **304** and no article body crosses the wire.
+
+Warm still costs 52 round trips rather than 26, because `If-None-Match` is not a
+CORS-safelisted header and each conditional GET is preflighted. Chrome would
+normally cache the preflight, but the Fetch spec forces cache mode `no-store` for
+any request carrying an author-set `If-None-Match`, and Chrome skips the
+preflight cache there. Both halves are empty responses, so it costs latency and
+no payload.
+
+### The weak-ETag wrinkle
+
+Cloudflare weakens an ETag whenever it gzips a response — which, for a browser,
+is always — turning `"98aa…"` into `W/"98aa…"`. But its `If-None-Match`
+comparison is an exact string match, not the weak comparison RFC 9110 asks for.
+Echo back the tag it just sent and it answers `200` with the whole body.
+
+So `app.js` strips the `W/` before sending it back, which is what actually earns
+the 304. Nothing is lost by that: the strong form is the tag the Worker itself
+emitted, and a genuinely weak match is exactly the case a feed reader wants to
+treat as unchanged anyway.
+
+## The window
+
+A feed carries its publisher's most recent items, not everything that ever
+existed, so a fresh device starts with what the feeds currently hold rather than
+the whole archive.
+
+An item ageing out of a feed is therefore **not** treated as a deletion — if it
+were, the local catalog could never exceed the window. It keeps what it has seen
+and adds what arrives, so the archive on a device grows past the feeds over time.
+The only thing that removes an article is its outline leaving `feeds.opml`.
+
+## Derived, not carried
+
+The feed has no cover image, no excerpt and no reading estimate. All three fall
+out of the body it does carry, and are computed once when an item is
+materialized rather than on every render: the excerpt from `<description>` when a
+publisher sends one and off the front of the body when it does not, the cover
+from the first image in the body, the estimate from its length.
+
+Cover coverage is thinner than it was — the old generator used `og:image`, which
+is not in the feed, and plenty of bodies have no image at all. A card without a
+thumbnail is a normal card.
 
 ## Publishers, not sources
 
-The sidebar lists **publishers**. A source in zhizhu is crawl configuration —
-which spider config found a link — and it is not what anyone subscribes to. The
-`mp` source alone stands in for every WeChat account, so grouping by source
-would collapse them all into one row.
+The sidebar lists **publishers**, one row per outline, in the order `feeds.opml`
+gives them — so the order of the sidebar is something you can edit, and a new
+publisher has a row before its first article arrives.
 
-`publisher` defaults to the source id, so an ordinary blog is its own publisher
-and nothing about it changes. The display name comes from `author`, resolved
-through `head.json` rather than stored per article — which is what makes a
-rename free: the new name arrives with the next article and every past entry
-re-labels, with no log rewrite and no change to any feed URL.
+A source in zhizhu is crawl configuration — which spider config found a link —
+and it is not what anyone subscribes to. The `mp` source alone stands in for
+every WeChat account, so grouping by source would collapse them all into one row.
+It correspondingly has no feed of its own.
+
+The display name is the outline's `text`, which means a rename is an edit here
+and re-labels every past entry at once, with no change to any feed URL.
 
 ## Reading state
 
-Read, starred and the sync cursor live in IndexedDB, on the device. Nothing is
+Read, starred and the per-feed ETags live in IndexedDB, on the device. Nothing is
 sent anywhere and there is no account. That is a deliberate limit, not an
 oversight — it is also why the export/import in the app matters if you read on
 more than one machine.
+
+Articles are keyed on the feed's `<guid>`, which is stable across a re-archive
+and across a change of link, so read and star flags survive both.
 
 ## Working on it
 
 ```sh
 python3 -m http.server 8899     # then open http://127.0.0.1:8899/
-just reader-build               # from the zhizhu repo, to refresh data/
 ```
 
-No build step, no npm, no framework: three files of app code, served as they
-are. The service worker's cache key is stamped at deploy time from a hash of
-those files (`.github/workflows/deploy.yml`), so it moves when they do and never
-otherwise — a publish must not evict the app shell or the articles already
-cached.
+No build step, no npm, no framework: three files of app code and an OPML file,
+served as they are. The feeds are fetched cross-origin from the live Worker,
+which allows any origin, so local development needs no proxy.
+
+The service worker's cache key is stamped at deploy time from a hash of the app
+files *and* `feeds.opml` (`.github/workflows/deploy.yml`), so it moves when they
+do and never otherwise. `feeds.opml` is in that hash because it is app state
+rather than content: adding a publisher has to reach every reader, and it reaches
+them by the cache key moving.
