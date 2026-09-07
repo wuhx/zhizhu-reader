@@ -1,0 +1,87 @@
+# Reader on feeds
+
+## Why
+
+The feed and the reader were two renderings of the same archive, produced by two
+extraction passes over the same source, published to two places, on two triggers.
+Only the feed's trigger was on a schedule, so an `mp` article could sit in the
+feed for ten hours while the reader waited for its bundle to be rebuilt.
+
+Nothing in the reader needed a private format. The feed already carries the full
+extracted body, a stable guid, both dates and the source's `original_url`. So the
+bundle goes and the reader becomes an ordinary feed reader: OPML for the
+subscription list, RSS for the content.
+
+## What was decided
+
+**The OPML is the whole subscription list, shipped in the repo.** Authoritative
+on every load, so there is no seed-versus-live problem, no local subscription
+store, no add-feed UI, and no feed fetched that the file did not name. Cost is a
+deploy to add a publisher — the right trade, since publishers change rarely and
+articles change constantly.
+
+**Accept the feed window rather than raising the limits.** 26 feeds carry ~280
+items against the bundle's 387. A fresh device starts at the window; an item
+ageing out of a feed is deliberately *not* treated as a deletion, so a device's
+local archive grows past the feeds over time. Only an outline leaving the OPML
+removes anything.
+
+**Dropped the quality notice and the `q` chip.** The feed carries no quality
+signal and it could only have been re-derived by guessing from body length. An
+ordinary feed reader has no such concept.
+
+**Feed slugs are the publisher id with hyphens.** All 27 publishers resolve
+except `mp`, which is crawl configuration rather than a publisher and has no feed
+of its own. The OPML was generated once from each feed's own `<channel><title>`.
+
+## Two things found by measuring rather than assuming
+
+**The zhizhu-home side was already done.** CORS, the 204 preflight and working
+`304`s were all live on the Worker. The plan's "hard blocker" had been shipped,
+so this commit touches only the reader.
+
+**Cloudflare's weak-ETag bug would have silently defeated the whole point.** It
+weakens an ETag whenever it gzips — always, for a browser — turning `"98aa…"`
+into `W/"98aa…"`, but compares `If-None-Match` by exact string rather than the
+weak comparison RFC 9110 requires. Echoing back the tag it just sent gets a `200`
+with the full body. The first warm-sync measurement was 26 × 200; stripping the
+`W/` prefix before sending made it 26 × 304. This is Cloudflare's compression
+layer, not the Worker, so it could not have been fixed on the zhizhu side.
+
+## Gotchas
+
+**The `entries` store had to stay body-free.** Boot reads every entry to draw the
+timeline, so bodies went into their own store rather than onto the record — else
+cold boot deserializes ~2 MB of HTML to render a list of titles.
+
+**A latent service-worker trap.** The old fetch handler sent *every* cross-origin
+GET to a cache-first strategy. Left alone it would have pinned the first copy of
+every feed forever and the reader would never have seen another article. The
+catch-all is now guarded on `destination === 'image'`.
+
+**The DB migration is one-way.** v1 → v2 clears `entries` and `meta` and keeps
+`flags`; read and star survive because a feed's guid is the id the bundle used.
+But IndexedDB refuses to open at a lower version, so rolling this deploy back
+would leave already-upgraded readers with a broken app until they clear site
+data.
+
+**52 round trips warm, not 26.** `If-None-Match` is not CORS-safelisted, so each
+conditional GET is preflighted, and the Fetch spec forces cache mode `no-store`
+for any author-set `If-None-Match`, which makes Chrome skip its preflight cache.
+Both halves are empty responses — latency, not payload.
+
+## Verified end to end
+
+Driven in headless Chrome over CDP against the live feeds: cold load 26 feeds /
+280 articles / 974 KB; warm sync 26 × `304`; offline timeline and article bodies
+from IndexedDB; `mp` "Open original" resolving to the archived capture;
+outline removal dropping 280 → 276 with bodies cleaned up alongside entries; and
+a seeded v1 database upgrading with both flags intact and an unread badge of
+279/280.
+
+## Follow-up
+
+`data/` and its deploy step are kept as a working fallback. Once this has run
+long enough to trust, delete `data/` here plus `reader/build.py`,
+`reader/bundle.py`, `reader/state.json`, `reader.yml`, the reader repo's deploy
+key and the admin UI's "Publish reader" button in the zhizhu repo.
