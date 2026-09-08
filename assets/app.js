@@ -192,6 +192,9 @@ async function loadOutlines(opmlUrl = state.opmlUrl) {
   if (!res.ok) throw new Error(`the OPML subscription list returned HTTP ${res.status}`);
   const text = await res.text();
   const doc = parseXML(text, 'OPML');
+  if (!doc.documentElement || doc.documentElement.localName.toLowerCase() !== 'opml') {
+    throw new Error('document is not an OPML subscription list');
+  }
 
   const outlines = [];
   const keys = new Set();
@@ -361,9 +364,11 @@ async function dropMissing(live, etags) {
 }
 
 function errorDetail(error) {
-  return error instanceof Error && error.message
-    ? error.message
-    : 'Unknown feed error.';
+  const messages = [];
+  for (let current = error; current instanceof Error; current = current.cause) {
+    if (current.message && !messages.includes(current.message)) messages.push(current.message);
+  }
+  return messages.length ? messages.join(': ') : 'Unknown feed error.';
 }
 
 /** Read the subscription list, then bring every feed in it up to date. */
@@ -995,21 +1000,37 @@ function renderSettingsPublishers() {
 
     const copyButton = el('button', 'publisher-action');
     copyButton.type = 'button';
-    copyButton.title = `Copy RSS address for ${outline.title}`;
-    copyButton.setAttribute('aria-label', copyButton.title);
+    const copyLabel = `Copy RSS address for ${outline.title}`;
+    const copyMarkup = '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>';
+    copyButton.title = copyLabel;
+    copyButton.setAttribute('aria-label', copyLabel);
     copyButton.disabled = !outline.xmlUrl;
-    copyButton.appendChild(staticIcon('<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'));
+    copyButton.appendChild(staticIcon(copyMarkup));
     copyButton.addEventListener('click', async () => {
       copyButton.classList.remove('copy-success', 'copy-failed');
       try {
         await copyText(outline.xmlUrl);
         copyButton.classList.add('copy-success');
         copyButton.title = 'Copied';
+        copyButton.setAttribute('aria-label', `Copied RSS address for ${outline.title}`);
+        copyButton.textContent = '';
+        copyButton.appendChild(staticIcon('<path d="m5 12 4 4L19 6"/>'));
       } catch (err) {
         console.error(`Could not copy the RSS address for publisher ${outline.key}.`, err);
         copyButton.classList.add('copy-failed');
         copyButton.title = 'Could not copy';
+        copyButton.setAttribute('aria-label', `Could not copy RSS address for ${outline.title}`);
+        copyButton.textContent = '';
+        copyButton.appendChild(staticIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/>'));
       }
+      setTimeout(() => {
+        if (!copyButton.isConnected) return;
+        copyButton.classList.remove('copy-success', 'copy-failed');
+        copyButton.title = copyLabel;
+        copyButton.setAttribute('aria-label', copyLabel);
+        copyButton.textContent = '';
+        copyButton.appendChild(staticIcon(copyMarkup));
+      }, 1600);
     });
     actions.appendChild(copyButton);
     row.appendChild(actions);
