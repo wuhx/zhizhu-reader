@@ -557,6 +557,8 @@ function renderTimeline() {
 }
 
 let observer = null;
+let articleRequest = 0;
+
 function sentinel() {
   const node = el('div', 'sentinel');
   if (observer) observer.disconnect();
@@ -636,13 +638,14 @@ function card(entry) {
     node.appendChild(time);
   }
 
-  node.addEventListener('click', () => runAction(open(entry.id), 'Could not open this article.'));
-  node.addEventListener('keydown', e => {
-    if (e.target === node && e.key === 'Enter') {
-      e.preventDefault();
-      runAction(open(entry.id), 'Could not open this article.');
-    }
-  });
+  const activate = () => runAction(
+    activateArticle(entry.id),
+    'Could not open this article.'
+  );
+  node.addEventListener('click', activate);
+  // Tabbing through the timeline is navigation too. Keep the reader in sync
+  // with the focused row rather than requiring a second Enter or click.
+  node.addEventListener('focus', activate);
   return node;
 }
 
@@ -698,6 +701,7 @@ const sanitizer = (() => {
 async function open(id) {
   const entry = state.byId.get(id);
   if (!entry) return;
+  const request = ++articleRequest;
 
   state.selected = id;
   try {
@@ -715,13 +719,25 @@ async function open(id) {
   empty.hidden = true;
   holder.hidden = false;
   holder.textContent = '';
+  holder.dataset.id = id;
+  holder.setAttribute('aria-busy', 'true');
   $('#reader-scroll').scrollTop = 0;
 
   // The body came down with the listing, so this is a local read and there is
   // no offline case to apologise for: anything in the timeline is readable.
-  const html = await idbGet('bodies', id);
+  let html;
+  try {
+    html = await idbGet('bodies', id);
+  } catch (err) {
+    if (request === articleRequest) holder.removeAttribute('aria-busy');
+    throw new Error(`could not load article ${id}`, { cause: err });
+  }
+  // Key repeat can start several reads in quick succession. An older IndexedDB
+  // request must never overwrite the article chosen by a newer key press.
+  if (request !== articleRequest) return;
   holder.textContent = '';
   holder.appendChild(articleView(entry, html || ''));
+  holder.removeAttribute('aria-busy');
 
   if (!isRead(id)) {
     await setFlag(id, 'read', true);
@@ -729,6 +745,14 @@ async function open(id) {
     if (node) node.classList.add('is-read');
     renderNav();
   }
+}
+
+function activateArticle(id) {
+  const holder = $('#article');
+  if (state.selected === id && holder.dataset.id === id && !holder.hidden) {
+    return Promise.resolve();
+  }
+  return open(id);
 }
 
 function articleView(entry, html) {
@@ -931,18 +955,64 @@ async function copyText(text) {
 
 function move(delta) {
   const list = state.filtered;
-  if (!list.length) return;
+  if (!list.length) return Promise.resolve();
   const at = list.findIndex(e => e.id === state.selected);
   const next = at < 0 ? 0 : Math.min(list.length - 1, Math.max(0, at + delta));
   // Render further rows if the selection is walking past what is on screen.
   while (next >= state.rendered && state.rendered < list.length) renderTimeline();
   const entry = list[next];
-  state.selected = entry.id;
-  for (const node of document.querySelectorAll('.card')) {
-    node.classList.toggle('is-selected', node.dataset.id === entry.id);
-  }
+  // open() updates selection synchronously before its IndexedDB read, so a
+  // following repeated key press starts from this row immediately.
+  const opening = activateArticle(entry.id);
   const node = document.querySelector(`.card[data-id="${entry.id}"]`);
-  if (node) node.scrollIntoView({ block: 'nearest' });
+  if (node) {
+    node.scrollIntoView({ block: 'nearest' });
+    // In focus mode the timeline remains the logical navigation source but is
+    // intentionally hidden. Restore real DOM focus when its row is visible.
+    if (!document.body.classList.contains('focus-mode')) {
+      node.focus({ preventScroll: true });
+    }
+  }
+  return opening;
+}
+
+let readerWasOpenBeforeFocus = false;
+
+async function toggleFocusMode() {
+  if (document.body.classList.contains('focus-mode')) {
+    leaveFocusMode();
+    return;
+  }
+
+  readerWasOpenBeforeFocus = document.body.classList.contains('reader-open');
+  document.body.classList.add('focus-mode', 'reader-open');
+
+  const selectedIsVisible = state.filtered.some(entry => entry.id === state.selected);
+  const id = selectedIsVisible ? state.selected : state.filtered[0]?.id;
+  if (!id) return;
+
+  try {
+    await activateArticle(id);
+  } catch (err) {
+    document.body.classList.remove('focus-mode');
+    document.body.classList.toggle('reader-open', readerWasOpenBeforeFocus);
+    throw new Error('could not enter focus mode', { cause: err });
+  }
+}
+
+function leaveFocusMode({ backToList = false } = {}) {
+  document.body.classList.remove('focus-mode');
+  document.body.classList.toggle(
+    'reader-open',
+    backToList ? false : readerWasOpenBeforeFocus
+  );
+
+  const node = state.selected &&
+    document.querySelector(`.card[data-id="${state.selected}"]`);
+  if (node) {
+    node.scrollIntoView({ block: 'nearest' });
+    node.focus({ preventScroll: true });
+  }
 }
 
 function wireKeys() {
@@ -965,15 +1035,33 @@ function wireKeys() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
     switch (e.key) {
-      case 'j': case 'ArrowDown': e.preventDefault(); move(1); break;
-      case 'k': case 'ArrowUp': e.preventDefault(); move(-1); break;
+      case 'j': case 'ArrowDown':
+        e.preventDefault();
+        runAction(move(1), 'Could not open the next article.');
+        break;
+      case 'k': case 'ArrowUp':
+        e.preventDefault();
+        runAction(move(-1), 'Could not open the previous article.');
+        break;
       case 'Enter':
         if (state.selected) {
           e.preventDefault();
-          runAction(open(state.selected), 'Could not open this article.');
+          runAction(activateArticle(state.selected), 'Could not open this article.');
         }
         break;
-      case 'Escape': document.body.classList.remove('reader-open'); break;
+      case 'f':
+        if (!e.repeat) {
+          e.preventDefault();
+          runAction(toggleFocusMode(), 'Could not toggle focus mode.');
+        }
+        break;
+      case 'Escape':
+        if (document.body.classList.contains('focus-mode')) {
+          leaveFocusMode({ backToList: true });
+        } else {
+          document.body.classList.remove('reader-open');
+        }
+        break;
       case 'o': {
         if (!state.selected) break;
         const entry = state.byId.get(state.selected);
@@ -997,7 +1085,13 @@ function wireKeys() {
 function wireChrome() {
   $('#menu-btn').addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
   $('#scrim').addEventListener('click', () => document.body.classList.remove('sidebar-open'));
-  $('#back-btn').addEventListener('click', () => document.body.classList.remove('reader-open'));
+  $('#back-btn').addEventListener('click', () => {
+    if (document.body.classList.contains('focus-mode')) {
+      leaveFocusMode({ backToList: true });
+    } else {
+      document.body.classList.remove('reader-open');
+    }
+  });
   $('#help-btn').addEventListener('click', () => $('#help').showModal());
 
   $('#theme-toggle').addEventListener('click', () => {

@@ -53,6 +53,13 @@ button, input { font: inherit; color: inherit; }
   height: 100dvh;
 }
 
+/* Focus mode keeps the timeline's selection alive while giving the reader the
+   whole viewport. The article itself stays measure-limited for readability. */
+body.focus-mode #app { grid-template-columns: minmax(0, 1fr); }
+body.focus-mode #sidebar,
+body.focus-mode #timeline { display: none; }
+body.focus-mode #reader { grid-column: 1 / -1; }
+
 /* ------------------------------------------------------------- sidebar -- */
 
 #sidebar {
