@@ -345,6 +345,10 @@ function publisherName(id) {
   return (p && p.n) || id;
 }
 
+function publisherOutline(id) {
+  return state.outlines.find(outline => outline.key === id) || null;
+}
+
 function isRead(id) { return state.read.has(id); }
 function isStarred(id) { return state.starred.has(id); }
 
@@ -410,6 +414,7 @@ function applyView() {
   state.rendered = 0;
   renderTimeline();
   renderNav();
+  updateSearchUI();
 }
 
 // --------------------------------------------------------------- rendering --
@@ -443,6 +448,7 @@ function monogram(id) {
 }
 
 function renderNav() {
+  hidePublisherPopover();
   const nav = $('#nav');
   nav.textContent = '';
 
@@ -475,7 +481,12 @@ function renderNav() {
         .sort((a, b) => publisherName(a).localeCompare(publisherName(b)));
 
   const heading = el('div', 'nav-heading');
-  heading.textContent = 'Publishers';
+  const headingLabel = el('span');
+  headingLabel.textContent = 'Publishers';
+  heading.appendChild(headingLabel);
+  const headingCount = el('span', 'nav-heading-count');
+  headingCount.textContent = String(publishers.length);
+  heading.appendChild(headingCount);
   nav.appendChild(heading);
 
   const group = el('div', 'nav-group');
@@ -493,12 +504,23 @@ function navRow(view, label, count, publisherId) {
   const text = el('span', 'nav-label');
   text.textContent = label;
   row.appendChild(text);
+  if (publisherId) {
+    text.addEventListener('pointerenter', () => showPublisherPopover(publisherId, text));
+    text.addEventListener('pointerleave', schedulePublisherPopoverHide);
+    row.addEventListener('focus', () => showPublisherPopover(publisherId, text));
+    row.addEventListener('blur', event => {
+      if (!$('#publisher-popover').contains(event.relatedTarget)) schedulePublisherPopoverHide();
+    });
+  }
   if (count) {
     const badge = el('span', 'nav-count');
     badge.textContent = count > 999 ? '999+' : String(count);
     row.appendChild(badge);
   }
   row.addEventListener('click', () => {
+    // Re-rendering under a stationary pointer can emit a fresh pointerenter.
+    // Suppress that one so choosing a publisher also dismisses its card.
+    publisherPopoverSuppressedUntil = performance.now() + 260;
     state.view = view;
     try {
       localStorage.setItem(LS.view, JSON.stringify(view));
@@ -507,6 +529,7 @@ function navRow(view, label, count, publisherId) {
     }
     document.body.classList.remove('sidebar-open');
     applyView();
+    hidePublisherPopover();
   });
   return row;
 }
@@ -519,14 +542,10 @@ function renderTimeline() {
   for (const entry of slice) cards.appendChild(card(entry));
   state.rendered += slice.length;
 
-  const meta = $('#timeline-meta');
-  const count = state.filtered.length
-    ? `${state.filtered.length} article${state.filtered.length === 1 ? '' : 's'}`
-    : '';
   const degraded = state.feedErrors.length
     ? `${state.feedErrors.length} feed${state.feedErrors.length === 1 ? '' : 's'} unavailable`
     : '';
-  meta.textContent = [count, degraded].filter(Boolean).join(' · ');
+  setTimelineStatus(degraded);
 
   if (!state.filtered.length) {
     const empty = el('div', 'empty');
@@ -768,8 +787,145 @@ async function markUnread(id) {
 function runAction(action, message) {
   Promise.resolve(action).catch(err => {
     console.error(message, err);
-    $('#timeline-meta').textContent = message;
+    setTimelineStatus(message);
   });
+}
+
+// ---------------------------------------------------- search and popovers --
+
+function setTimelineStatus(message) {
+  const status = $('#timeline-status');
+  status.textContent = message;
+  status.hidden = !message;
+}
+
+function searchScope() {
+  if (state.view.kind === 'publisher') {
+    const count = state.entries.filter(entry => entry.p === state.view.id).length;
+    return { count, label: publisherName(state.view.id) };
+  }
+  return { count: state.entries.length, label: null };
+}
+
+function searchPlaceholder() {
+  const { count, label } = searchScope();
+  const articles = `${count} article${count === 1 ? '' : 's'}`;
+  return label
+    ? `Search ${articles} in ${label}`
+    : `Search ${articles} across ${state.outlines.length || Object.keys(state.publishers).length} publishers`;
+}
+
+function updateSearchUI() {
+  const input = $('#search');
+  if (!input) return;
+  input.placeholder = searchPlaceholder();
+  const hint = $('#search-hint');
+  if (state.query.trim()) {
+    const count = state.filtered.length;
+    hint.textContent = `${count} matching article${count === 1 ? '' : 's'}`;
+  } else {
+    hint.textContent = 'Type to filter this view';
+  }
+}
+
+function openSearch() {
+  hidePublisherPopover();
+  const dialog = $('#search-dialog');
+  updateSearchUI();
+  if (!dialog.open) dialog.showModal();
+  const input = $('#search');
+  input.value = state.query;
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+let publisherPopoverHideTimer = null;
+let activePublisherId = null;
+let publisherPopoverSuppressedUntil = 0;
+
+function schedulePublisherPopoverHide() {
+  clearTimeout(publisherPopoverHideTimer);
+  publisherPopoverHideTimer = setTimeout(hidePublisherPopover, 140);
+}
+
+function hidePublisherPopover() {
+  clearTimeout(publisherPopoverHideTimer);
+  publisherPopoverHideTimer = null;
+  activePublisherId = null;
+  $('#publisher-popover').hidden = true;
+}
+
+function positionPublisherPopover(anchor) {
+  const popover = $('#publisher-popover');
+  const rect = anchor.getBoundingClientRect();
+  const sidebarRect = $('#sidebar').getBoundingClientRect();
+  const gap = 12;
+  const margin = 12;
+  const width = Math.min(292, window.innerWidth - margin * 2);
+  let left = Math.max(rect.right + gap, sidebarRect.right + 8);
+  if (left + width > window.innerWidth - margin) {
+    left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+  }
+  popover.style.left = `${left}px`;
+  popover.style.top = `${Math.max(margin, Math.min(rect.top - 14, window.innerHeight - popover.offsetHeight - margin))}px`;
+}
+
+function showPublisherPopover(id, anchor) {
+  if (performance.now() < publisherPopoverSuppressedUntil) return;
+  clearTimeout(publisherPopoverHideTimer);
+  publisherPopoverHideTimer = null;
+  const outline = publisherOutline(id);
+  if (!outline || !outline.xmlUrl) {
+    hidePublisherPopover();
+    return;
+  }
+
+  activePublisherId = id;
+  const popover = $('#publisher-popover');
+  const icon = $('#publisher-popover-icon');
+  icon.textContent = '';
+  icon.appendChild(monogram(id));
+  $('#publisher-popover-name').textContent = publisherName(id);
+  const entries = state.entries.filter(entry => entry.p === id);
+  const unread = entries.filter(entry => !isRead(entry.id)).length;
+  $('#publisher-popover-stats').textContent = `${entries.length} article${entries.length === 1 ? '' : 's'} · ${unread} unread`;
+  const url = $('#publisher-popover-url');
+  url.textContent = outline.xmlUrl.replace(/^https?:\/\//, '');
+  url.title = outline.xmlUrl;
+  const copy = $('#copy-rss-btn');
+  copy.classList.remove('copied', 'copy-failed');
+  copy.querySelector('span').textContent = 'Copy RSS URL';
+  popover.hidden = false;
+  positionPublisherPopover(anchor);
+}
+
+async function copyText(text) {
+  let clipboardError = null;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (err) {
+      clipboardError = err;
+    }
+  }
+
+  const field = el('textarea', 'visually-hidden');
+  field.value = text;
+  field.setAttribute('readonly', '');
+  document.body.appendChild(field);
+  field.select();
+  try {
+    if (!document.execCommand('copy')) {
+      throw new Error('the browser rejected the copy command', { cause: clipboardError });
+    }
+  } catch (err) {
+    throw new Error('could not copy text to the clipboard', { cause: err });
+  } finally {
+    field.remove();
+  }
 }
 
 // ------------------------------------------------------------------- input --
@@ -793,9 +949,18 @@ function move(delta) {
 function wireKeys() {
   document.addEventListener('keydown', e => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
-    if (e.key === '/' && !typing) { e.preventDefault(); $('#search').focus(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      openSearch();
+      return;
+    }
+    if (e.key === '/' && !typing) { e.preventDefault(); openSearch(); return; }
     if (typing) {
-      if (e.key === 'Escape') e.target.blur();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if ($('#search-dialog').open) $('#search-dialog').close();
+        e.target.blur();
+      }
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -852,6 +1017,37 @@ function wireChrome() {
     timer = setTimeout(() => { state.query = e.target.value; applyView(); }, 120);
   });
 
+  const searchDialog = $('#search-dialog');
+  searchDialog.addEventListener('click', event => {
+    if (event.target === searchDialog) searchDialog.close();
+  });
+
+  const publisherPopover = $('#publisher-popover');
+  publisherPopover.addEventListener('pointerenter', () => {
+    clearTimeout(publisherPopoverHideTimer);
+    publisherPopoverHideTimer = null;
+  });
+  publisherPopover.addEventListener('pointerleave', schedulePublisherPopoverHide);
+  $('#copy-rss-btn').addEventListener('click', async event => {
+    event.stopPropagation();
+    const id = activePublisherId;
+    const outline = id && publisherOutline(id);
+    if (!outline || !outline.xmlUrl) return;
+    const button = event.currentTarget;
+    try {
+      await copyText(outline.xmlUrl);
+      button.classList.remove('copy-failed');
+      button.classList.add('copied');
+      button.querySelector('span').textContent = 'Copied';
+    } catch (err) {
+      console.error(`Could not copy the RSS URL for publisher ${id}.`, err);
+      button.classList.remove('copied');
+      button.classList.add('copy-failed');
+      button.querySelector('span').textContent = 'Could not copy';
+    }
+  });
+  window.addEventListener('resize', hidePublisherPopover);
+
   $('#sync-btn').addEventListener('click', () => refresh({ manual: true }));
 
   const pill = $('#update-pill');
@@ -868,16 +1064,16 @@ async function refresh({ manual = false } = {}) {
   btn.classList.add('spinning');
   try {
     const entries = await refreshFeeds({
-      onProgress: text => { $('#timeline-meta').textContent = text; },
+      onProgress: text => { if (manual) setTimelineStatus(text); },
     });
     state.entries = sortEntries(entries);
     state.byId = new Map(state.entries.map(e => [e.id, e]));
     applyView();
   } catch (err) {
     console.error('Could not refresh the feeds.', err);
-    $('#timeline-meta').textContent = manual
+    setTimelineStatus(manual
       ? 'Could not reach the server.'
-      : 'Could not refresh the feeds.';
+      : 'Could not refresh the feeds.');
   } finally {
     btn.classList.remove('spinning');
   }
@@ -942,5 +1138,5 @@ async function boot() {
 
 boot().catch(err => {
   console.error('Could not start the reader.', err);
-  $('#timeline-meta').textContent = 'Could not start the reader.';
+  setTimelineStatus('Could not start the reader.');
 });

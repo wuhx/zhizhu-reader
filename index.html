@@ -68,19 +68,11 @@ if ('serviceWorker' in navigator) {
   </aside>
 
   <section id="timeline">
-    <header class="pane-header">
-      <div class="pane-header-row">
-        <button id="menu-btn" class="icon-btn" title="Publishers" aria-label="Show publishers">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9.5 4v16"/></svg>
-        </button>
-        <div class="search-wrap">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20.5 20.5-4.9-4.9"/></svg>
-          <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search articles">
-        </div>
-      </div>
-      <div id="timeline-meta" class="pane-subhead"></div>
-    </header>
+    <button id="menu-btn" class="icon-btn timeline-menu-btn" title="Publishers" aria-label="Show publishers">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9.5 4v16"/></svg>
+    </button>
     <div id="cards" role="list"></div>
+    <div id="timeline-status" role="status" aria-live="polite" hidden></div>
   </section>
 
   <article id="reader">
@@ -102,6 +94,36 @@ if ('serviceWorker' in navigator) {
 </div>
 <div id="scrim"></div>
 
+<dialog id="search-dialog" aria-labelledby="search-label">
+  <div class="search-box">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20.5 20.5-4.9-4.9"/></svg>
+    <label id="search-label" class="visually-hidden" for="search">Search articles</label>
+    <input id="search" type="search" autocomplete="off" spellcheck="false" aria-describedby="search-hint">
+    <kbd>esc</kbd>
+  </div>
+  <div id="search-hint" class="search-hint" aria-live="polite"></div>
+</dialog>
+
+<div id="publisher-popover" class="publisher-popover" role="dialog" aria-label="Publisher details" hidden>
+  <div class="publisher-popover-head">
+    <div id="publisher-popover-icon"></div>
+    <div class="publisher-popover-title-wrap">
+      <strong id="publisher-popover-name"></strong>
+      <span id="publisher-popover-stats"></span>
+    </div>
+  </div>
+  <div class="publisher-feed-label">RSS feed</div>
+  <div class="publisher-feed-url">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11a8 8 0 0 1 8 8"/><path d="M5 5a14 14 0 0 1 14 14"/><circle cx="5" cy="19" r="1"/></svg>
+    <span id="publisher-popover-url"></span>
+  </div>
+  <button id="copy-rss-btn" class="copy-rss-btn" type="button">
+    <svg class="icon copy-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+    <svg class="icon check-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+    <span>Copy RSS URL</span>
+  </button>
+</div>
+
 <dialog id="help">
   <h2>Keyboard</h2>
   <dl>
@@ -110,7 +132,7 @@ if ('serviceWorker' in navigator) {
     <dt><kbd>o</kbd></dt><dd>Open the original page</dd>
     <dt><kbd>s</kbd></dt><dd>Star</dd>
     <dt><kbd>u</kbd></dt><dd>Mark unread</dd>
-    <dt><kbd>/</kbd></dt><dd>Search</dd>
+    <dt><kbd>⌘</kbd> <kbd>K</kbd></dt><dd>Search</dd>
     <dt><kbd>Esc</kbd></dt><dd>Back to the list</dd>
   </dl>
   <form method="dialog"><button class="btn">Close</button></form>
