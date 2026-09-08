@@ -1103,7 +1103,11 @@ async function downloadOPML() {
   setOPMLStatus('Preparing OPML download…');
   try {
     const text = state.opmlText || (await loadOutlines(state.opmlUrl)).text;
-    const blob = new Blob([text], { type: 'text/x-opml;charset=utf-8' });
+    // GitHub Pages serves .opml as text/x-opml without a charset. Keep an
+    // explicit UTF-8 BOM in downloads so tools that ignore the XML declaration
+    // still decode publisher names correctly.
+    const blob = new Blob(['\uFEFF', text.replace(/^\uFEFF/, '')],
+      { type: 'text/x-opml;charset=utf-8' });
     const objectUrl = URL.createObjectURL(blob);
     const link = el('a');
     link.href = objectUrl;
