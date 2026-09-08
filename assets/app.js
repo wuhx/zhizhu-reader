@@ -787,7 +787,12 @@ async function open(id) {
   holder.textContent = '';
   holder.dataset.id = id;
   holder.setAttribute('aria-busy', 'true');
-  $('#reader-scroll').scrollTop = 0;
+  const readerScroll = $('#reader-scroll');
+  readerScroll.scrollTop = 0;
+  // Focus the actual scrolling element before the IndexedDB read. Native Space
+  // paging then works immediately after every mouse or keyboard article switch,
+  // without a second click in the reader pane.
+  readerScroll.focus({ preventScroll: true });
 
   // The body came down with the listing, so this is a local read and there is
   // no offline case to apologise for: anything in the timeline is readable.
@@ -1168,11 +1173,6 @@ function move(delta) {
   const node = document.querySelector(`.card[data-id="${entry.id}"]`);
   if (node) {
     node.scrollIntoView({ block: 'nearest' });
-    // In focus mode the timeline remains the logical navigation source but is
-    // intentionally hidden. Restore real DOM focus when its row is visible.
-    if (!document.body.classList.contains('focus-mode')) {
-      node.focus({ preventScroll: true });
-    }
   }
   return opening;
 }
