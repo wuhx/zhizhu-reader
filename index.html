@@ -39,6 +39,9 @@ try {
       <button id="help-btn" class="icon-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></svg>
       </button>
+      <button id="settings-btn" class="icon-btn settings-btn" title="Subscription settings" aria-label="Subscription settings">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.95 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.53-1H3v-4h.08A1.7 1.7 0 0 0 4.6 8.95a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06A1.7 1.7 0 0 0 8.95 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.53 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 7l-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.93 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+      </button>
     </div>
   </aside>
 
@@ -79,25 +82,41 @@ try {
   <div id="search-hint" class="search-hint" aria-live="polite"></div>
 </dialog>
 
-<div id="publisher-popover" class="publisher-popover" role="dialog" aria-label="Publisher details" hidden>
-  <div class="publisher-popover-head">
-    <div id="publisher-popover-icon"></div>
-    <div class="publisher-popover-title-wrap">
-      <strong id="publisher-popover-name"></strong>
-      <span id="publisher-popover-stats"></span>
+<dialog id="settings-dialog" aria-labelledby="settings-title">
+  <header class="settings-header">
+    <div>
+      <h2 id="settings-title">Subscriptions</h2>
+      <p>Configure the OPML source and inspect its publishers.</p>
     </div>
-  </div>
-  <div class="publisher-feed-label">RSS feed</div>
-  <div class="publisher-feed-url">
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11a8 8 0 0 1 8 8"/><path d="M5 5a14 14 0 0 1 14 14"/><circle cx="5" cy="19" r="1"/></svg>
-    <span id="publisher-popover-url"></span>
-  </div>
-  <button id="copy-rss-btn" class="copy-rss-btn" type="button">
-    <svg class="icon copy-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
-    <svg class="icon check-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
-    <span>Copy RSS URL</span>
-  </button>
-</div>
+    <button id="settings-close-btn" class="icon-btn" type="button" title="Close" aria-label="Close subscription settings">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+    </button>
+  </header>
+
+  <form id="opml-form" class="opml-form">
+    <label for="opml-url">OPML address</label>
+    <div class="opml-input-row">
+      <input id="opml-url" name="opml-url" type="url" inputmode="url" autocomplete="url" required>
+      <button id="opml-save-btn" class="btn btn-primary" type="submit">Save &amp; refresh</button>
+    </div>
+    <div class="opml-actions">
+      <button id="opml-default-btn" class="text-btn" type="button">Restore default</button>
+      <button id="opml-download-btn" class="text-btn" type="button">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M5 20h14"/></svg>
+        Download OPML
+      </button>
+    </div>
+    <p id="opml-status" class="opml-status" role="status" aria-live="polite"></p>
+  </form>
+
+  <section class="publisher-settings" aria-labelledby="publisher-settings-title">
+    <div class="publisher-settings-heading">
+      <h3 id="publisher-settings-title">Publishers</h3>
+      <span id="publisher-total" class="publisher-total">0</span>
+    </div>
+    <div id="publisher-settings-list" class="publisher-settings-list"></div>
+  </section>
+</dialog>
 
 <dialog id="help">
   <h2>Keyboard</h2>

@@ -40,9 +40,8 @@ jobs:
       # part of the input, with its own CACHE_NAME line stripped, so a change to
       # the caching logic busts the cache too.
       #
-      # feeds.opml is in the hash because it is app state rather than content:
-      # adding a publisher has to reach every reader, and it reaches them by the
-      # cache key moving.
+      # The default feeds.opml is in the hash so a changed default reaches every
+      # reader that has not selected a custom subscription list.
       - name: Stamp service worker cache key
         run: |
           key="zhizhu-cache-$(cat _site/index.html _site/assets/app.js _site/assets/style.css \

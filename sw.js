@@ -5,9 +5,9 @@ const CACHE_NAME = 'zhizhu-cache-00000000';
 const IMG_CACHE_NAME = 'zhizhu-img-v1';
 const IMG_CACHE_LIMIT = 400;
 
-// feeds.opml is a core asset because it is app state, not content: adding a
-// publisher is a deploy, and the deploy's cache key covers this file, so the
-// new subscription list arrives with the new worker.
+// The default feeds.opml remains a core asset, so a deploy updates readers that
+// have not selected a custom OPML address and keeps the default available
+// offline after it has been cached.
 const CORE_ASSETS = [
   './',
   './index.html',

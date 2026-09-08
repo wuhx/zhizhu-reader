@@ -13,28 +13,23 @@ Live at https://wuhx.github.io/zhizhu-reader/
 
 ## The subscription list
 
-`feeds.opml`, and that is the whole of it. It is authoritative on every load, so
-adding or removing a publisher is editing that file and deploying. The client
-cannot subscribe to anything on its own.
+The default is
+`https://wuhx.github.io/zhizhu-reader/feeds.opml`. The gear at the bottom-right
+of the publisher sidebar opens subscription settings, where that address can be
+replaced, restored to the default, or downloaded. A custom address is saved in
+the browser and completely replaces the default list; the two are not merged.
 
-Which settles several things at once. There is no seed-versus-live problem: the
-shipped file *is* the state, so a new publisher reaches every reader on the next
-deploy with no re-check logic and nothing to merge against local edits. There is
-no local subscription store, no add-feed UI and no import. And there is no
-third-party CORS problem, because only feeds named here are ever fetched — a
-hand-added outside feed would still have to permit cross-origin reads, which is a
-thing to check while editing the file rather than a promise the app makes.
-
-It does mean a deploy to add a publisher. That is the right trade: publishers
-change rarely and articles change constantly, so the rare thing goes in a deploy
-and the frequent thing stays a fetch.
+An OPML file can point to feeds on any host, but those hosts must allow the
+reader's cross-origin requests. An unreachable, malformed, or CORS-blocked feed
+does not stop the other publishers from refreshing. Its publisher is marked
+with the failure in subscription settings.
 
 Removing an outline drops its articles from the local catalog. Nothing else does
 — see the window, below.
 
 ## How a refresh works
 
-1. `GET feeds.opml`
+1. `GET` the configured OPML address
 2. for each outline, `GET` the feed with `If-None-Match` from the ETag stored
    last time
 3. materialize every item of every feed that actually changed
@@ -75,7 +70,8 @@ the whole archive.
 An item ageing out of a feed is therefore **not** treated as a deletion — if it
 were, the local catalog could never exceed the window. It keeps what it has seen
 and adds what arrives, so the archive on a device grows past the feeds over time.
-The only thing that removes an article is its outline leaving `feeds.opml`.
+The only thing that removes an article is its outline leaving the effective
+OPML list.
 
 ## Derived, not carried
 
@@ -91,9 +87,9 @@ thumbnail is a normal card.
 
 ## Publishers, not sources
 
-The sidebar lists **publishers**, one row per outline, in the order `feeds.opml`
-gives them — so the order of the sidebar is something you can edit, and a new
-publisher has a row before its first article arrives.
+The sidebar lists **publishers**, one row per outline, in the order the effective
+OPML file gives them — so the order of the sidebar is something you can edit,
+and a new publisher has a row before its first article arrives.
 
 A source in zhizhu is crawl configuration — which spider config found a link —
 and it is not what anyone subscribes to. The `mp` source alone stands in for
@@ -105,10 +101,9 @@ and re-labels every past entry at once, with no change to any feed URL.
 
 ## Reading state
 
-Read, starred and the per-feed ETags live in IndexedDB, on the device. Nothing is
-sent anywhere and there is no account. That is a deliberate limit, not an
-oversight — it is also why the export/import in the app matters if you read on
-more than one machine.
+Read, starred, the cached OPML, feed failures and per-feed ETags live in
+IndexedDB, on the device. The selected OPML address lives in local storage.
+Nothing is sent anywhere and there is no account.
 
 Articles are keyed on the feed's `<guid>`, which is stable across a re-archive
 and across a change of link, so read and star flags survive both.
@@ -124,7 +119,6 @@ served as they are. The feeds are fetched cross-origin from the live Worker,
 which allows any origin, so local development needs no proxy.
 
 The service worker's cache key is stamped at deploy time from a hash of the app
-files *and* `feeds.opml` (`.github/workflows/deploy.yml`), so it moves when they
-do and never otherwise. `feeds.opml` is in that hash because it is app state
-rather than content: adding a publisher has to reach every reader, and it reaches
-them by the cache key moving.
+files *and* the default `feeds.opml` (`.github/workflows/deploy.yml`), so it moves
+when they do and never otherwise. The default list stays a core asset so a deploy
+updates readers that have not selected a custom OPML address.

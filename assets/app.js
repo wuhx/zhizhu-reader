@@ -2,13 +2,13 @@
 
 // The reader. Three panes: publishers, a timeline, an article.
 //
-// An ordinary feed reader. The subscription list is feeds.opml, shipped with the
-// app and authoritative on every load; the articles are standard RSS, bodies and
-// all. Every item is materialized into IndexedDB once, so every view after that
-// is a local query — no pagination, no fetch when an article is opened, and no
-// search index to build or keep in step.
+// An ordinary feed reader. The subscription list comes from an OPML URL; the
+// hosted feeds.opml is the default, and a reader can replace it locally. The
+// articles are standard RSS, bodies and all. Every item is materialized into
+// IndexedDB once, so every view after that is a local query — no pagination, no
+// fetch when an article is opened, and no search index to build or keep in step.
 
-const OPML_URL = 'feeds.opml';
+const DEFAULT_OPML_URL = 'https://wuhx.github.io/zhizhu-reader/feeds.opml';
 
 // Feeds in flight at once. Enough to hide the latency of two dozen requests on a
 // cold load, few enough that one tab does not look like an attack.
@@ -29,10 +29,15 @@ const PAGE = 60;
 
 const EXCERPT_FADE = 220;
 
-const LS = { theme: 'zhizhu.theme', view: 'zhizhu.view', sel: 'zhizhu.sel' };
+const LS = {
+  theme: 'zhizhu.theme',
+  view: 'zhizhu.view',
+  sel: 'zhizhu.sel',
+  opml: 'zhizhu.opml',
+};
 
 const state = {
-  outlines: [],       // the subscription list, in the order feeds.opml gives it
+  outlines: [],       // the subscription list, in the order its OPML gives it
   entries: [],        // the whole catalog, newest first
   byId: new Map(),
   publishers: {},
@@ -43,6 +48,8 @@ const state = {
   read: new Set(),
   starred: new Set(),
   query: '',
+  opmlUrl: DEFAULT_OPML_URL,
+  opmlText: '',
   feedErrors: [],
 };
 
@@ -144,34 +151,81 @@ function isoDate(value) {
   return Number.isNaN(at) ? '' : new Date(at).toISOString();
 }
 
+function normalizeOPMLURL(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate) throw new Error('Enter an OPML address.');
+  let url;
+  try {
+    url = new URL(candidate, location.href);
+  } catch (err) {
+    throw new Error('Enter a valid OPML address.', { cause: err });
+  }
+  if (!/^https?:$/.test(url.protocol)) throw new Error('OPML address must use HTTP or HTTPS.');
+  if (url.username || url.password) throw new Error('OPML address must not contain credentials.');
+  return url.href;
+}
+
+function configuredOPMLURL() {
+  try {
+    const saved = localStorage.getItem(LS.opml);
+    return saved ? normalizeOPMLURL(saved) : DEFAULT_OPML_URL;
+  } catch (err) {
+    console.warn('Could not restore the OPML address; using the default.', err);
+    return DEFAULT_OPML_URL;
+  }
+}
+
 /**
- * The subscription list, and the whole of it.
- *
- * Shipped with the app and authoritative on every load, so a new publisher
- * arrives with a deploy and there is nothing local to reconcile it against — no
- * seed-versus-live problem, no add-feed UI, and no feed fetched that this file
- * did not name.
+ * Fetch and parse the effective subscription list. Relative feed addresses are
+ * resolved against the OPML document, not the app, so portable OPML works from
+ * any host. A bad feed address remains in the returned list with a configuration
+ * error: settings can then identify the publisher that needs repair.
  */
-async function loadOutlines() {
-  const res = await fetch(OPML_URL, { cache: 'no-cache' });
-  if (!res.ok) throw new Error(`${res.status} ${OPML_URL}`);
-  const doc = parseXML(await res.text(), 'OPML');
+async function loadOutlines(opmlUrl = state.opmlUrl) {
+  const url = normalizeOPMLURL(opmlUrl);
+  let res;
+  try {
+    res = await fetch(url, { cache: 'no-cache' });
+  } catch (err) {
+    throw new Error('could not fetch the OPML subscription list', { cause: err });
+  }
+  if (!res.ok) throw new Error(`the OPML subscription list returned HTTP ${res.status}`);
+  const text = await res.text();
+  const doc = parseXML(text, 'OPML');
 
   const outlines = [];
+  const keys = new Set();
+  let invalid = 0;
   for (const node of doc.querySelectorAll('outline[xmlUrl]')) {
-    const xmlUrl = node.getAttribute('xmlUrl');
-    // The feed's own file name, which is short, stable, and already what
-    // monogram() hashes for a publisher's colour.
-    const key = new URL(xmlUrl, location.href).pathname
-      .replace(/^.*\//, '').replace(/\.xml$/i, '');
-    if (!key) continue;
+    const rawUrl = node.getAttribute('xmlUrl').trim();
+    const title = node.getAttribute('text') || node.getAttribute('title') || rawUrl || 'Unnamed publisher';
+    let xmlUrl = rawUrl;
+    let configurationError = '';
+    let key = '';
+    try {
+      if (!rawUrl) throw new Error('Feed address is empty.');
+      const parsed = new URL(rawUrl, url);
+      if (!/^https?:$/.test(parsed.protocol)) throw new Error('Feed address must use HTTP or HTTPS.');
+      if (parsed.username || parsed.password) throw new Error('Feed address must not contain credentials.');
+      xmlUrl = parsed.href;
+      // The feed's own file name is short, stable, and already what monogram()
+      // hashes for a publisher's colour.
+      key = parsed.pathname.replace(/^.*\//, '').replace(/\.xml$/i, '');
+      if (!key) throw new Error('Feed address has no usable file name.');
+      if (keys.has(key)) throw new Error(`Another feed already uses the publisher key “${key}”.`);
+    } catch (err) {
+      configurationError = err instanceof Error ? err.message : 'Invalid feed address.';
+      key = `invalid-${++invalid}`;
+    }
+    keys.add(key);
     outlines.push({
       key,
       xmlUrl,
-      title: node.getAttribute('text') || node.getAttribute('title') || key,
+      title,
+      configurationError,
     });
   }
-  return outlines;
+  return { outlines, text, url };
 }
 
 /**
@@ -245,14 +299,25 @@ const strongETag = tag => tag.replace(/^W\//, '');
  * refresh that changed nothing costs a header exchange and no parsing.
  */
 async function pullFeed(outline, etags) {
-  const headers = {};
-  if (etags[outline.key]) headers['If-None-Match'] = strongETag(etags[outline.key]);
+  if (outline.configurationError) throw new Error(outline.configurationError);
 
-  const res = await fetch(outline.xmlUrl, { cache: 'no-store', headers });
+  const headers = {};
+  const savedTag = etags[outline.key];
+  if (savedTag && savedTag.url === outline.xmlUrl && savedTag.tag) {
+    headers['If-None-Match'] = strongETag(savedTag.tag);
+  }
+
+  let res;
+  try {
+    res = await fetch(outline.xmlUrl, { cache: 'no-store', headers });
+  } catch (err) {
+    throw new Error('network request failed or was blocked by CORS', { cause: err });
+  }
   if (res.status === 304) return;
-  if (!res.ok) throw new Error(`${res.status} ${outline.xmlUrl}`);
+  if (!res.ok) throw new Error(`feed returned HTTP ${res.status}`);
 
   const doc = parseXML(await res.text(), 'feed');
+  if (!doc.getElementsByTagName('channel').length) throw new Error('document is not an RSS feed');
   const items = [];
   for (const item of doc.getElementsByTagName('item')) {
     const made = materialize(item, outline.key);
@@ -261,7 +326,8 @@ async function pullFeed(outline, etags) {
   await store(items);
 
   const tag = res.headers.get('ETag');
-  if (tag) etags[outline.key] = tag; else delete etags[outline.key];
+  if (tag) etags[outline.key] = { url: outline.xmlUrl, tag };
+  else delete etags[outline.key];
 }
 
 /**
@@ -294,12 +360,23 @@ async function dropMissing(live, etags) {
   });
 }
 
+function errorDetail(error) {
+  return error instanceof Error && error.message
+    ? error.message
+    : 'Unknown feed error.';
+}
+
 /** Read the subscription list, then bring every feed in it up to date. */
-async function refreshFeeds({ onProgress } = {}) {
-  const outlines = await loadOutlines();
+async function refreshFeeds({ onProgress, source } = {}) {
+  const loaded = source || await loadOutlines();
+  const { outlines, text, url } = loaded;
+  state.opmlUrl = url;
+  state.opmlText = text;
   state.outlines = outlines;
   state.publishers = {};
   for (const outline of outlines) state.publishers[outline.key] = { n: outline.title };
+  state.feedErrors = [];
+  renderSettingsPublishers();
 
   const etags = (await idbGet('meta', 'etags')) || {};
   await dropMissing(new Set(outlines.map(o => o.key)), etags);
@@ -316,7 +393,7 @@ async function refreshFeeds({ onProgress } = {}) {
         await pullFeed(outline, etags);
       } catch (err) {
         const failure = new Error(`could not refresh feed ${outline.key}`, { cause: err });
-        failures.push(failure);
+        failures.push({ key: outline.key, detail: errorDetail(err), error: failure });
         console.error(failure);
       }
       done++;
@@ -327,7 +404,11 @@ async function refreshFeeds({ onProgress } = {}) {
 
   await idbPut('meta', etags, 'etags');
   await idbPut('meta', outlines, 'outlines');
+  await idbPut('meta', text, 'opmlText');
+  await idbPut('meta', url, 'opmlUrl');
+  await idbPut('meta', failures.map(({ key, detail }) => ({ key, detail })), 'feedErrors');
   state.feedErrors = failures;
+  renderSettingsPublishers();
   return idbAll('entries');
 }
 
@@ -343,10 +424,6 @@ function sortEntries(entries) {
 function publisherName(id) {
   const p = state.publishers[id];
   return (p && p.n) || id;
-}
-
-function publisherOutline(id) {
-  return state.outlines.find(outline => outline.key === id) || null;
 }
 
 function isRead(id) { return state.read.has(id); }
@@ -448,7 +525,6 @@ function monogram(id) {
 }
 
 function renderNav() {
-  hidePublisherPopover();
   const nav = $('#nav');
   nav.textContent = '';
 
@@ -484,9 +560,6 @@ function renderNav() {
   const headingLabel = el('span');
   headingLabel.textContent = 'Publishers';
   heading.appendChild(headingLabel);
-  const headingCount = el('span', 'nav-heading-count');
-  headingCount.textContent = String(publishers.length);
-  heading.appendChild(headingCount);
   nav.appendChild(heading);
 
   const group = el('div', 'nav-group');
@@ -504,23 +577,12 @@ function navRow(view, label, count, publisherId) {
   const text = el('span', 'nav-label');
   text.textContent = label;
   row.appendChild(text);
-  if (publisherId) {
-    text.addEventListener('pointerenter', () => showPublisherPopover(publisherId, text));
-    text.addEventListener('pointerleave', schedulePublisherPopoverHide);
-    row.addEventListener('focus', () => showPublisherPopover(publisherId, text));
-    row.addEventListener('blur', event => {
-      if (!$('#publisher-popover').contains(event.relatedTarget)) schedulePublisherPopoverHide();
-    });
-  }
   if (count) {
     const badge = el('span', 'nav-count');
     badge.textContent = count > 999 ? '999+' : String(count);
     row.appendChild(badge);
   }
   row.addEventListener('click', () => {
-    // Re-rendering under a stationary pointer can emit a fresh pointerenter.
-    // Suppress that one so choosing a publisher also dismisses its card.
-    publisherPopoverSuppressedUntil = performance.now() + 260;
     state.view = view;
     try {
       localStorage.setItem(LS.view, JSON.stringify(view));
@@ -529,7 +591,6 @@ function navRow(view, label, count, publisherId) {
     }
     document.body.classList.remove('sidebar-open');
     applyView();
-    hidePublisherPopover();
   });
   return row;
 }
@@ -814,7 +875,7 @@ function runAction(action, message) {
   });
 }
 
-// ---------------------------------------------------- search and popovers --
+// ----------------------------------------------------- search and settings --
 
 function setTimelineStatus(message) {
   const status = $('#timeline-status');
@@ -852,7 +913,6 @@ function updateSearchUI() {
 }
 
 function openSearch() {
-  hidePublisherPopover();
   const dialog = $('#search-dialog');
   updateSearchUI();
   if (!dialog.open) dialog.showModal();
@@ -864,64 +924,180 @@ function openSearch() {
   });
 }
 
-let publisherPopoverHideTimer = null;
-let activePublisherId = null;
-let publisherPopoverSuppressedUntil = 0;
-
-function schedulePublisherPopoverHide() {
-  clearTimeout(publisherPopoverHideTimer);
-  publisherPopoverHideTimer = setTimeout(hidePublisherPopover, 140);
+function staticIcon(markup) {
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('class', 'icon');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('aria-hidden', 'true');
+  icon.innerHTML = markup;
+  return icon;
 }
 
-function hidePublisherPopover() {
-  clearTimeout(publisherPopoverHideTimer);
-  publisherPopoverHideTimer = null;
-  activePublisherId = null;
-  $('#publisher-popover').hidden = true;
+function feedErrorFor(key) {
+  return state.feedErrors.find(failure => failure.key === key) || null;
 }
 
-function positionPublisherPopover(anchor) {
-  const popover = $('#publisher-popover');
-  const rect = anchor.getBoundingClientRect();
-  const sidebarRect = $('#sidebar').getBoundingClientRect();
-  const gap = 12;
-  const margin = 12;
-  const width = Math.min(292, window.innerWidth - margin * 2);
-  let left = Math.max(rect.right + gap, sidebarRect.right + 8);
-  if (left + width > window.innerWidth - margin) {
-    left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
-  }
-  popover.style.left = `${left}px`;
-  popover.style.top = `${Math.max(margin, Math.min(rect.top - 14, window.innerHeight - popover.offsetHeight - margin))}px`;
-}
+function renderSettingsPublishers() {
+  const list = $('#publisher-settings-list');
+  if (!list) return;
+  $('#publisher-total').textContent = String(state.outlines.length);
+  list.textContent = '';
 
-function showPublisherPopover(id, anchor) {
-  if (performance.now() < publisherPopoverSuppressedUntil) return;
-  clearTimeout(publisherPopoverHideTimer);
-  publisherPopoverHideTimer = null;
-  const outline = publisherOutline(id);
-  if (!outline || !outline.xmlUrl) {
-    hidePublisherPopover();
+  if (!state.outlines.length) {
+    const empty = el('div', 'publisher-settings-empty');
+    empty.textContent = 'No publishers in this OPML file.';
+    list.appendChild(empty);
     return;
   }
 
-  activePublisherId = id;
-  const popover = $('#publisher-popover');
-  const icon = $('#publisher-popover-icon');
-  icon.textContent = '';
-  icon.appendChild(monogram(id));
-  $('#publisher-popover-name').textContent = publisherName(id);
-  const entries = state.entries.filter(entry => entry.p === id);
-  const unread = entries.filter(entry => !isRead(entry.id)).length;
-  $('#publisher-popover-stats').textContent = `${entries.length} article${entries.length === 1 ? '' : 's'} · ${unread} unread`;
-  const url = $('#publisher-popover-url');
-  url.textContent = outline.xmlUrl.replace(/^https?:\/\//, '');
-  url.title = outline.xmlUrl;
-  const copy = $('#copy-rss-btn');
-  copy.classList.remove('copied', 'copy-failed');
-  copy.querySelector('span').textContent = 'Copy RSS URL';
-  popover.hidden = false;
-  positionPublisherPopover(anchor);
+  for (const outline of state.outlines) {
+    const failure = feedErrorFor(outline.key);
+    const detail = outline.configurationError || (failure && failure.detail) || '';
+    const row = el('div', 'publisher-settings-row');
+    if (detail) row.classList.add('has-error');
+
+    const info = el('div', 'publisher-settings-info');
+    info.appendChild(monogram(outline.key));
+    const copy = el('div', 'publisher-settings-copy');
+    const name = el('div', 'publisher-settings-name');
+    name.textContent = outline.title;
+    copy.appendChild(name);
+    const address = el('div', 'publisher-settings-url');
+    address.textContent = outline.xmlUrl || 'No feed address';
+    address.title = outline.xmlUrl || '';
+    copy.appendChild(address);
+    if (detail) {
+      const error = el('div', 'publisher-settings-error');
+      error.appendChild(staticIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/>'));
+      const errorText = el('span');
+      errorText.textContent = detail;
+      error.appendChild(errorText);
+      copy.appendChild(error);
+    }
+    info.appendChild(copy);
+    row.appendChild(info);
+
+    const actions = el('div', 'publisher-settings-actions');
+    let rss;
+    if (outline.configurationError || !outline.xmlUrl) {
+      rss = el('span', 'publisher-action rss-action');
+      rss.setAttribute('aria-disabled', 'true');
+    } else {
+      rss = el('a', 'publisher-action rss-action');
+      rss.href = outline.xmlUrl;
+      rss.target = '_blank';
+      rss.rel = 'noopener noreferrer';
+    }
+    rss.title = `Open RSS feed for ${outline.title}`;
+    rss.setAttribute('aria-label', rss.title);
+    rss.appendChild(staticIcon('<path d="M5 11a8 8 0 0 1 8 8"/><path d="M5 5a14 14 0 0 1 14 14"/><circle cx="5" cy="19" r="1"/>'));
+    actions.appendChild(rss);
+
+    const copyButton = el('button', 'publisher-action');
+    copyButton.type = 'button';
+    copyButton.title = `Copy RSS address for ${outline.title}`;
+    copyButton.setAttribute('aria-label', copyButton.title);
+    copyButton.disabled = !outline.xmlUrl;
+    copyButton.appendChild(staticIcon('<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'));
+    copyButton.addEventListener('click', async () => {
+      copyButton.classList.remove('copy-success', 'copy-failed');
+      try {
+        await copyText(outline.xmlUrl);
+        copyButton.classList.add('copy-success');
+        copyButton.title = 'Copied';
+      } catch (err) {
+        console.error(`Could not copy the RSS address for publisher ${outline.key}.`, err);
+        copyButton.classList.add('copy-failed');
+        copyButton.title = 'Could not copy';
+      }
+    });
+    actions.appendChild(copyButton);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
+function setOPMLStatus(message, kind = '') {
+  const status = $('#opml-status');
+  status.textContent = message;
+  if (kind) status.dataset.kind = kind; else delete status.dataset.kind;
+}
+
+function setSettingsBusy(busy) {
+  $('#opml-url').disabled = busy;
+  $('#opml-save-btn').disabled = busy;
+  $('#opml-default-btn').disabled = busy;
+  $('#opml-download-btn').disabled = busy;
+}
+
+function openSettings() {
+  document.body.classList.remove('sidebar-open');
+  const input = $('#opml-url');
+  input.value = state.opmlUrl;
+  renderSettingsPublishers();
+  if (state.feedErrors.length) {
+    setOPMLStatus(`${state.feedErrors.length} feed${state.feedErrors.length === 1 ? '' : 's'} could not be refreshed.`, 'error');
+  } else {
+    setOPMLStatus('');
+  }
+  const dialog = $('#settings-dialog');
+  if (!dialog.open) dialog.showModal();
+}
+
+async function saveOPMLSetting() {
+  setSettingsBusy(true);
+  setOPMLStatus('Loading subscription list…');
+  try {
+    // A previous automatic refresh may still be writing the catalog. Wait for
+    // it so two different subscription lists cannot race to become current.
+    if (refreshInFlight) await refreshInFlight;
+
+    const source = await loadOutlines($('#opml-url').value);
+    try {
+      if (source.url === DEFAULT_OPML_URL) localStorage.removeItem(LS.opml);
+      else localStorage.setItem(LS.opml, source.url);
+    } catch (err) {
+      throw new Error('could not save the OPML address in this browser', { cause: err });
+    }
+
+    state.opmlUrl = source.url;
+    $('#opml-url').value = source.url;
+    await refresh({ manual: true, source, throwOnFailure: true });
+    if (state.feedErrors.length) {
+      setOPMLStatus(`Saved. ${state.feedErrors.length} feed${state.feedErrors.length === 1 ? '' : 's'} could not be refreshed.`, 'error');
+    } else {
+      setOPMLStatus(`Saved. ${state.outlines.length} publisher${state.outlines.length === 1 ? '' : 's'} refreshed.`, 'success');
+    }
+  } catch (err) {
+    console.error('Could not apply the OPML setting.', err);
+    setOPMLStatus(errorDetail(err), 'error');
+  } finally {
+    setSettingsBusy(false);
+  }
+}
+
+async function downloadOPML() {
+  const button = $('#opml-download-btn');
+  button.disabled = true;
+  setOPMLStatus('Preparing OPML download…');
+  try {
+    const text = state.opmlText || (await loadOutlines(state.opmlUrl)).text;
+    const blob = new Blob([text], { type: 'text/x-opml;charset=utf-8' });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = el('a');
+    link.href = objectUrl;
+    link.download = 'feeds.opml';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    setOPMLStatus('OPML downloaded.', 'success');
+  } catch (err) {
+    console.error('Could not download the OPML subscription list.', err);
+    setOPMLStatus(errorDetail(err), 'error');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function copyText(text) {
@@ -1018,6 +1194,14 @@ function leaveFocusMode({ backToList = false } = {}) {
 function wireKeys() {
   document.addEventListener('keydown', e => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+    const settingsDialog = $('#settings-dialog');
+    if (settingsDialog.open) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        settingsDialog.close();
+      }
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       openSearch();
@@ -1093,6 +1277,22 @@ function wireChrome() {
     }
   });
   $('#help-btn').addEventListener('click', () => $('#help').showModal());
+  $('#settings-btn').addEventListener('click', openSettings);
+  $('#settings-close-btn').addEventListener('click', () => $('#settings-dialog').close());
+
+  const settingsDialog = $('#settings-dialog');
+  settingsDialog.addEventListener('click', event => {
+    if (event.target === settingsDialog) settingsDialog.close();
+  });
+  $('#opml-form').addEventListener('submit', event => {
+    event.preventDefault();
+    saveOPMLSetting();
+  });
+  $('#opml-default-btn').addEventListener('click', () => {
+    $('#opml-url').value = DEFAULT_OPML_URL;
+    setOPMLStatus('Default address restored in the field. Save to apply.');
+  });
+  $('#opml-download-btn').addEventListener('click', downloadOPML);
 
   $('#theme-toggle').addEventListener('click', () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -1115,53 +1315,55 @@ function wireChrome() {
     if (event.target === searchDialog) searchDialog.close();
   });
 
-  const publisherPopover = $('#publisher-popover');
-  publisherPopover.addEventListener('pointerenter', () => {
-    clearTimeout(publisherPopoverHideTimer);
-    publisherPopoverHideTimer = null;
-  });
-  publisherPopover.addEventListener('pointerleave', schedulePublisherPopoverHide);
-  $('#copy-rss-btn').addEventListener('click', async event => {
-    event.stopPropagation();
-    const id = activePublisherId;
-    const outline = id && publisherOutline(id);
-    if (!outline || !outline.xmlUrl) return;
-    const button = event.currentTarget;
-    try {
-      await copyText(outline.xmlUrl);
-      button.classList.remove('copy-failed');
-      button.classList.add('copied');
-      button.querySelector('span').textContent = 'Copied';
-    } catch (err) {
-      console.error(`Could not copy the RSS URL for publisher ${id}.`, err);
-      button.classList.remove('copied');
-      button.classList.add('copy-failed');
-      button.querySelector('span').textContent = 'Could not copy';
-    }
-  });
-  window.addEventListener('resize', hidePublisherPopover);
-
   $('#sync-btn').addEventListener('click', () => refresh({ manual: true }));
 
 }
 
 // -------------------------------------------------------------------- boot --
 
-async function refresh({ manual = false } = {}) {
+let refreshInFlight = null;
+
+function refresh(options = {}) {
+  if (refreshInFlight) return refreshInFlight;
+  const task = performRefresh(options);
+  refreshInFlight = task;
+  task.then(
+    () => { if (refreshInFlight === task) refreshInFlight = null; },
+    () => { if (refreshInFlight === task) refreshInFlight = null; }
+  );
+  return task;
+}
+
+async function performRefresh({ manual = false, source = null, throwOnFailure = false } = {}) {
   const btn = $('#sync-btn');
   btn.classList.add('spinning');
   try {
     const entries = await refreshFeeds({
-      onProgress: text => { if (manual) setTimelineStatus(text); },
+      source,
+      onProgress: text => {
+        if (manual) setTimelineStatus(text);
+        if ($('#settings-dialog').open) setOPMLStatus(text);
+      },
     });
     state.entries = sortEntries(entries);
     state.byId = new Map(state.entries.map(e => [e.id, e]));
     applyView();
+    if ($('#settings-dialog').open && !source) {
+      if (state.feedErrors.length) {
+        setOPMLStatus(`${state.feedErrors.length} feed${state.feedErrors.length === 1 ? '' : 's'} could not be refreshed.`, 'error');
+      } else {
+        setOPMLStatus(`Refreshed ${state.outlines.length} publisher${state.outlines.length === 1 ? '' : 's'}.`, 'success');
+      }
+    }
+    return true;
   } catch (err) {
     console.error('Could not refresh the feeds.', err);
     setTimelineStatus(manual
       ? 'Could not reach the server.'
       : 'Could not refresh the feeds.');
+    if ($('#settings-dialog').open) setOPMLStatus(errorDetail(err), 'error');
+    if (throwOnFailure) throw new Error('could not refresh the subscriptions', { cause: err });
+    return false;
   } finally {
     btn.classList.remove('spinning');
   }
@@ -1170,6 +1372,7 @@ async function refresh({ manual = false } = {}) {
 async function boot() {
   wireChrome();
   wireKeys();
+  state.opmlUrl = configuredOPMLURL();
 
   try {
     const saved = JSON.parse(localStorage.getItem(LS.view) || 'null');
@@ -1183,13 +1386,20 @@ async function boot() {
   // Render whatever is already stored before touching the network, so a
   // returning reader sees their timeline immediately and offline works. The
   // outlines are kept alongside for the same reason: the sidebar needs its
-  // names before feeds.opml has been read again.
-  const cached = await idbAll('entries');
-  const outlines = await idbGet('meta', 'outlines');
+  // names before the configured OPML has been read again.
+  const [cached, outlines, cachedOPMLText, cachedOPMLURL, cachedFeedErrors] = await Promise.all([
+    idbAll('entries'),
+    idbGet('meta', 'outlines'),
+    idbGet('meta', 'opmlText'),
+    idbGet('meta', 'opmlUrl'),
+    idbGet('meta', 'feedErrors'),
+  ]);
   if (outlines) {
     state.outlines = outlines;
     for (const outline of outlines) state.publishers[outline.key] = { n: outline.title };
   }
+  if (!cachedOPMLURL || cachedOPMLURL === state.opmlUrl) state.opmlText = cachedOPMLText || '';
+  if (Array.isArray(cachedFeedErrors)) state.feedErrors = cachedFeedErrors;
   if (cached.length) {
     state.entries = sortEntries(cached);
     state.byId = new Map(state.entries.map(e => [e.id, e]));

@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  The subscription list, and the whole of it: authoritative on every load.
-  Adding or removing a publisher is editing this file and deploying — the
-  client cannot subscribe to anything on its own, so there is no seed-versus-
-  live problem and nothing to merge against local edits.
-
-  Only feeds named here are ever fetched. An outside feed would have to
-  permit cross-origin reads, which is a thing to check while editing this
-  file rather than a promise the app makes.
+  The default subscription list. A reader can select another OPML address in
+  subscription settings; that list replaces this one rather than merging with
+  it. Feeds on another host must permit cross-origin browser requests.
 -->
 <opml version="2.0">
   <head>
