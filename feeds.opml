@@ -9,7 +9,7 @@
     <title>zhizhu</title>
   </head>
   <body>
-    <outline type="rss" text="AI前线" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-b7682654f4a3.xml"/>
+    <outline type="rss" text="AI总结" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/ai-summary.xml"/>
     <outline type="rss" text="Apple Ml Highlights" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/apple-ml-highlights.xml"/>
     <outline type="rss" text="Apple Newsroom" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/apple-newsroom.xml"/>
     <outline type="rss" text="Bytedance Seed Zh" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/bytedance-seed-zh.xml"/>
@@ -23,17 +23,17 @@
     <outline type="rss" text="Mistral News" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/mistral-news.xml"/>
     <outline type="rss" text="Nvidia Blog" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/nvidia-blog.xml"/>
     <outline type="rss" text="Nvidia News" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/nvidia-news.xml"/>
-    <outline type="rss" text="Oasis" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-wy0f0erlocgj52.xml"/>
     <outline type="rss" text="Openai Blog" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/openai-blog.xml"/>
     <outline type="rss" text="Qwen Blog En" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/qwen-blog-en.xml"/>
     <outline type="rss" text="Qwen Blog Zh" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/qwen-blog-zh.xml"/>
     <outline type="rss" text="Zhipuai News" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/zhipuai-news.xml"/>
+    <outline type="rss" text="Oasis" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-wy0f0erlocgj52.xml"/>
+    <outline type="rss" text="AI前线" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-b7682654f4a3.xml"/>
     <outline type="rss" text="人人都是产品经理" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-a3835146b8e6.xml"/>
     <outline type="rss" text="哈佛商业评论" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-5323868cd99f.xml"/>
-    <outline type="rss" text="就叫熊太行也行" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-4f549e2b08b0.xml"/>
     <outline type="rss" text="机器之心" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-dbc0a5474692.xml"/>
-    <outline type="rss" text="李清晨" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-533a58667ad1.xml"/>
     <outline type="rss" text="极客公园" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-7762007624712.xml"/>
+    <outline type="rss" text="李清晨" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-533a58667ad1.xml"/>
     <outline type="rss" text="海边的西塞罗" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-1aaf21c62bc6.xml"/>
   </body>
 </opml>
