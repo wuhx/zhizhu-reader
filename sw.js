@@ -49,59 +49,30 @@ self.addEventListener('activate', event => {
   );
 });
 
-// The revalidation can finish before the page has attached its message
-// listener — on a fast connection it usually does. So remember that we found an
-// update and hand it to the next client that says hello, which the page does as
-// soon as it registers. One-shot: once a client has been told, a reload starts
-// clean and the next revalidation finds nothing changed.
-let pendingUpdate = false;
-
-async function broadcastUpdate() {
-  pendingUpdate = true;
-  const clients = await self.clients.matchAll({ includeUncontrolled: true });
-  for (const client of clients) client.postMessage({ type: 'zhizhu-update' });
-}
-
-self.addEventListener('message', event => {
-  if (event.data?.type !== 'zhizhu-hello') return;
-  if (pendingUpdate) {
-    pendingUpdate = false;
-    event.source?.postMessage({ type: 'zhizhu-update' });
-  }
-});
-
-// Pages sends an ETag, but don't rely on it: fall back to Last-Modified, then
-// to comparing the bodies, so the update pill still fires on a server that
-// sends neither. Both responses are clones the caller no longer needs.
-async function hasChanged(cached, fresh) {
-  for (const header of ['ETag', 'Last-Modified']) {
-    const a = cached.headers.get(header);
-    const b = fresh.headers.get(header);
-    if (a && b) return a !== b;
-  }
-  const [oldBody, newBody] = await Promise.all([cached.text(), fresh.text()]);
-  return oldBody !== newBody;
-}
-
 async function staleWhileRevalidate(event) {
   const cache = await caches.open(CACHE_NAME);
   const cached = await cache.match(event.request);
-  // Clone now, not inside the revalidation: by the time that resumes from its
-  // first await, `cached` has been handed to the page and its body is disturbed,
-  // and clone() on a disturbed Response throws.
-  const previous = cached && cached.clone();
+  const resource = new URL(event.request.url).pathname;
 
   const revalidate = (async () => {
     let fresh;
     try {
       fresh = await fetch(new Request(event.request, { cache: 'no-cache' }));
-    } catch {
+    } catch (err) {
+      if (!cached) {
+        throw new Error(`Could not fetch uncached core asset ${resource}.`, { cause: err });
+      }
+      console.warn(`Could not revalidate core asset ${resource}; serving the cached response.`, err);
       return cached;
     }
-    if (!fresh.ok) return cached;
-    const changed = previous && await hasChanged(previous, fresh.clone());
+    if (!fresh.ok) {
+      if (!cached) {
+        throw new Error(`Could not fetch uncached core asset ${resource}: HTTP ${fresh.status}.`);
+      }
+      console.warn(`Could not revalidate core asset ${resource}: HTTP ${fresh.status}; serving the cached response.`);
+      return cached;
+    }
     await cache.put(event.request, fresh.clone());
-    if (changed) await broadcastUpdate();
     return fresh;
   })();
 

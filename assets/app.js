@@ -602,7 +602,6 @@ function card(entry) {
     text.appendChild(excerpt);
   }
   const foot = el('div', 'card-foot');
-  if (entry.mins) foot.appendChild(chip(`${entry.mins} min`));
   for (const tag of (entry.tags || []).slice(0, 3)) foot.appendChild(chip(tag));
   if (foot.childNodes.length) text.appendChild(foot);
   body.appendChild(text);
@@ -762,7 +761,7 @@ function articleView(entry, html) {
     original.textContent = 'Open original ↗';
     appendMeta(original);
   }
-  if (entry.mins) appendMeta(document.createTextNode(`${entry.mins} min`));
+  if (entry.mins) appendMeta(document.createTextNode(`${entry.mins} min read`));
   header.appendChild(meta);
   wrap.appendChild(header);
 
@@ -1050,11 +1049,6 @@ function wireChrome() {
 
   $('#sync-btn').addEventListener('click', () => refresh({ manual: true }));
 
-  const pill = $('#update-pill');
-  const showPill = () => { pill.hidden = false; };
-  if (window.zhizhuUpdateReady) showPill();
-  document.addEventListener('zhizhu-update', showPill);
-  pill.addEventListener('click', () => location.reload());
 }
 
 // -------------------------------------------------------------------- boot --
@@ -1124,9 +1118,8 @@ async function boot() {
   }
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').then(() => {
-      navigator.serviceWorker.controller?.postMessage({ type: 'zhizhu-hello' });
-    }).catch(err => console.error('Could not register the service worker.', err));
+    navigator.serviceWorker.register('sw.js')
+      .catch(err => console.error('Could not register the service worker.', err));
   }
 
   // A tab left open picks up new articles when it is looked at again rather
