@@ -33,7 +33,7 @@
     <outline type="rss" text="哈佛商业评论" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-5323868cd99f.xml"/>
     <outline type="rss" text="机器之心" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-dbc0a5474692.xml"/>
     <outline type="rss" text="极客公园" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-7762007624712.xml"/>
-    <outline type="rss" text="李清晨" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-533a58667ad1.xml"/>
-    <outline type="rss" text="海边的西塞罗" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-1aaf21c62bc6.xml"/>
+    <outline type="rss" text="阿里技术" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-438062fa21b1.xml"/>
+    <outline type="rss" text="腾讯研究院" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-eddde1fb5774.xml"/>
   </body>
 </opml>
