@@ -35,5 +35,12 @@
     <outline type="rss" text="极客公园" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-7762007624712.xml"/>
     <outline type="rss" text="阿里技术" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-438062fa21b1.xml"/>
     <outline type="rss" text="腾讯研究院" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-eddde1fb5774.xml"/>
+    <outline type="rss" text="Xiaomi MiMo" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-28f8e6ef12e0.xml"/>
+    <outline type="rss" text="DeepSeek" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-bc02ff24ae0f.xml"/>
+    <outline type="rss" text="Qoder" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-451cd4ac4921.xml"/>
+    <outline type="rss" text="腾讯混元" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-32d4a00a11f9.xml"/>
+    <outline type="rss" text="阿里云" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-df8e91cf9944.xml"/>
+    <outline type="rss" text="MiniMax 稀宇科技" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-0408ea2df307.xml"/>
+    <outline type="rss" text="百灵大模型" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-d0477bba6511.xml"/>
   </body>
 </opml>
