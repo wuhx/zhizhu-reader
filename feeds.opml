@@ -42,5 +42,6 @@
     <outline type="rss" text="阿里云" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-df8e91cf9944.xml"/>
     <outline type="rss" text="MiniMax 稀宇科技" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-0408ea2df307.xml"/>
     <outline type="rss" text="百灵大模型" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-d0477bba6511.xml"/>
+    <outline type="rss" text="腾讯技术工程" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh_d14465b5ce6c.xml"/>
   </body>
 </opml>
