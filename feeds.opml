@@ -28,13 +28,15 @@
     <outline type="rss" text="Qwen Blog Zh" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/qwen-blog-zh.xml"/>
     <outline type="rss" text="Zhipuai News" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/zhipuai-news.xml"/>
     <outline type="rss" text="Oasis" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-wy0f0erlocgj52.xml"/>
-    <outline type="rss" text="AI前线" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-b7682654f4a3.xml"/>
-    <outline type="rss" text="人人都是产品经理" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-a3835146b8e6.xml"/>
+    <outline type="rss" text="Olive" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-wy0f0erlocgj52.xml"/>
     <outline type="rss" text="哈佛商业评论" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-5323868cd99f.xml"/>
-    <outline type="rss" text="机器之心" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-dbc0a5474692.xml"/>
+    <outline type="rss" text="AI前线" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-b7682654f4a3.xml"/>
     <outline type="rss" text="极客公园" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/wxid-7762007624712.xml"/>
     <outline type="rss" text="阿里技术" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-438062fa21b1.xml"/>
+    <outline type="rss" text="人人都是产品经理" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-a3835146b8e6.xml"/>
     <outline type="rss" text="腾讯研究院" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-eddde1fb5774.xml"/>
+    <outline type="rss" text="数字生命卡兹克" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-94dba26f8ca0.xml"/>
+    <outline type="rss" text="机器之心" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-dbc0a5474692.xml"/>
     <outline type="rss" text="Xiaomi MiMo" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-28f8e6ef12e0.xml"/>
     <outline type="rss" text="DeepSeek" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-bc02ff24ae0f.xml"/>
     <outline type="rss" text="Qoder" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-451cd4ac4921.xml"/>
@@ -42,6 +44,6 @@
     <outline type="rss" text="阿里云" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-df8e91cf9944.xml"/>
     <outline type="rss" text="MiniMax 稀宇科技" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-0408ea2df307.xml"/>
     <outline type="rss" text="百灵大模型" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-d0477bba6511.xml"/>
-    <outline type="rss" text="腾讯技术工程" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh_d14465b5ce6c.xml"/>
+    <outline type="rss" text="腾讯技术工程" xmlUrl="https://zhizhu-api.pwd.workers.dev/feed/gh-d14465b5ce6c.xml"/>
   </body>
 </opml>
