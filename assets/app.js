@@ -36,6 +36,16 @@ const LS = {
   opml: 'zhizhu.opml',
 };
 
+// A home-screen launch can have no previous history entry: Android treats
+// popping that sole entry as closing the shortcut. Give that launch a private
+// root/list pair so Back can return an article to the timeline, and can be
+// absorbed at the timeline instead of exiting. Firefox may open a home-screen
+// shortcut in browser mode, so display-mode alone is not sufficient; a fresh
+// one-entry browsing context needs the same protection. Tabs that already have
+// a previous page deliberately keep the browser's usual Back behaviour.
+const HISTORY_OWNER = 'zhizhu-reader';
+let managedHistory = false;
+
 const state = {
   outlines: [],       // the subscription list, in the order its OPML gives it
   entries: [],        // the whole catalog, newest first
@@ -705,7 +715,7 @@ function card(entry) {
   }
 
   const activate = () => runAction(
-    activateArticle(entry.id),
+    navigateToArticle(entry.id),
     'Could not open this article.'
   );
   node.addEventListener('click', activate);
@@ -824,6 +834,103 @@ function activateArticle(id) {
     return Promise.resolve();
   }
   return open(id);
+}
+
+function navigationState(screen, id = null) {
+  const value = { owner: HISTORY_OWNER, screen };
+  if (id) value.id = id;
+  return value;
+}
+
+function isNavigationState(value, screen = null) {
+  return Boolean(value && value.owner === HISTORY_OWNER &&
+    (!screen || value.screen === screen));
+}
+
+function writeNavigationState(method, value) {
+  try {
+    history[method](value, '', location.href);
+  } catch (err) {
+    throw new Error(`could not ${method === 'pushState' ? 'add' : 'update'} the navigation history`,
+      { cause: err });
+  }
+}
+
+function recordArticleNavigation(id) {
+  if (!managedHistory) return;
+  const next = navigationState('article', id);
+  // Moving between articles is one reading session. Replace that session's
+  // entry so Back returns directly to the timeline rather than walking through
+  // every article that was selected.
+  if (isNavigationState(history.state, 'article')) {
+    writeNavigationState('replaceState', next);
+  } else {
+    writeNavigationState('pushState', next);
+  }
+}
+
+async function navigateToArticle(id, { recordHistory = true } = {}) {
+  if (!state.byId.has(id)) return;
+  if (recordHistory) recordArticleNavigation(id);
+  // A previously loaded article stays mounted off-screen on mobile. Reopening
+  // that same card must still bring the reader pane back even though it does
+  // not need another IndexedDB read.
+  document.body.classList.add('reader-open');
+  return activateArticle(id);
+}
+
+function closeReader() {
+  document.body.classList.remove('focus-mode', 'reader-open');
+}
+
+function navigateBackToList() {
+  if (managedHistory && isNavigationState(history.state, 'article')) {
+    history.back();
+    return;
+  }
+  closeReader();
+}
+
+function handleManagedNavigation(event) {
+  if (isNavigationState(event.state, 'article')) {
+    const id = event.state.id;
+    if (typeof id === 'string' && state.byId.has(id)) {
+      runAction(
+        navigateToArticle(id, { recordHistory: false }),
+        'Could not restore this article.'
+      );
+    } else {
+      closeReader();
+      writeNavigationState('replaceState', navigationState('list'));
+    }
+    return;
+  }
+
+  closeReader();
+  if (isNavigationState(event.state, 'root')) {
+    writeNavigationState('pushState', navigationState('list'));
+  }
+}
+
+function wireNavigationHistory() {
+  const installedDisplayMode = [
+    '(display-mode: standalone)',
+    '(display-mode: fullscreen)',
+    '(display-mode: minimal-ui)',
+  ].some(query => window.matchMedia(query).matches) || navigator.standalone === true;
+  // Some browsers retain an internal initial entry even when Back would close
+  // the shortcut, so history.length is not sufficient by itself. A direct
+  // launch has no referrer and is the closest web-visible signal available.
+  const directRootLaunch = history.length === 1 || document.referrer === '';
+  managedHistory = installedDisplayMode || directRootLaunch;
+  if (!managedHistory) return;
+
+  // Rebuild the pair on every document load. replaceState() turns the launch
+  // entry into the guard; pushState() makes the visible timeline the current
+  // entry. Returning to the guard immediately recreates the timeline entry.
+  writeNavigationState('replaceState', navigationState('root'));
+  writeNavigationState('pushState', navigationState('list'));
+  window.addEventListener('popstate', handleManagedNavigation);
 }
 
 function articleView(entry, html) {
@@ -1169,7 +1276,7 @@ function move(delta) {
   const entry = list[next];
   // open() updates selection synchronously before its IndexedDB read, so a
   // following repeated key press starts from this row immediately.
-  const opening = activateArticle(entry.id);
+  const opening = navigateToArticle(entry.id);
   const node = document.querySelector(`.card[data-id="${entry.id}"]`);
   if (node) {
     node.scrollIntoView({ block: 'nearest' });
@@ -1181,7 +1288,9 @@ let readerWasOpenBeforeFocus = false;
 
 async function toggleFocusMode() {
   if (document.body.classList.contains('focus-mode')) {
-    leaveFocusMode();
+    const backToList = !readerWasOpenBeforeFocus;
+    leaveFocusMode({ backToList });
+    if (backToList) navigateBackToList();
     return;
   }
 
@@ -1193,7 +1302,7 @@ async function toggleFocusMode() {
   if (!id) return;
 
   try {
-    await activateArticle(id);
+    await navigateToArticle(id);
   } catch (err) {
     document.body.classList.remove('focus-mode');
     document.body.classList.toggle('reader-open', readerWasOpenBeforeFocus);
@@ -1255,7 +1364,7 @@ function wireKeys() {
       case 'Enter':
         if (state.selected) {
           e.preventDefault();
-          runAction(activateArticle(state.selected), 'Could not open this article.');
+          runAction(navigateToArticle(state.selected), 'Could not open this article.');
         }
         break;
       case 'f':
@@ -1265,11 +1374,7 @@ function wireKeys() {
         }
         break;
       case 'Escape':
-        if (document.body.classList.contains('focus-mode')) {
-          leaveFocusMode({ backToList: true });
-        } else {
-          document.body.classList.remove('reader-open');
-        }
+        navigateBackToList();
         break;
       case 'o': {
         if (!state.selected) break;
@@ -1294,13 +1399,7 @@ function wireKeys() {
 function wireChrome() {
   $('#menu-btn').addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
   $('#scrim').addEventListener('click', () => document.body.classList.remove('sidebar-open'));
-  $('#back-btn').addEventListener('click', () => {
-    if (document.body.classList.contains('focus-mode')) {
-      leaveFocusMode({ backToList: true });
-    } else {
-      document.body.classList.remove('reader-open');
-    }
-  });
+  $('#back-btn').addEventListener('click', navigateBackToList);
   $('#help-btn').addEventListener('click', () => $('#help').showModal());
   $('#settings-btn').addEventListener('click', openSettings);
   $('#settings-close-btn').addEventListener('click', () => $('#settings-dialog').close());
@@ -1395,6 +1494,7 @@ async function performRefresh({ manual = false, source = null, throwOnFailure = 
 }
 
 async function boot() {
+  wireNavigationHistory();
   wireChrome();
   wireKeys();
   state.opmlUrl = configuredOPMLURL();
