@@ -29,6 +29,15 @@ const PAGE = 60;
 
 const EXCERPT_FADE = 220;
 
+// Touch navigation is deliberately limited to the one-pane phone layout. A
+// narrow desktop window still keeps mouse/keyboard behaviour, while a phone
+// tracks orientation changes without needing a reload.
+const PHONE_LAYOUT = '(max-width: 760px)';
+const COARSE_POINTER = '(pointer: coarse)';
+const EDGE_SWIPE_START = 32;
+const SWIPE_DISTANCE = 72;
+const SWIPE_DURATION = 700;
+
 const LS = {
   theme: 'zhizhu.theme',
   view: 'zhizhu.view',
@@ -444,6 +453,14 @@ function publisherName(id) {
 function isRead(id) { return state.read.has(id); }
 function isStarred(id) { return state.starred.has(id); }
 
+function todayCutoff() {
+  return new Date(Date.now() - 864e5).toISOString();
+}
+
+function isToday(entry, cutoff = todayCutoff()) {
+  return (entry.disc || '') >= cutoff;
+}
+
 async function setFlag(id, key, on) {
   const set = key === 'read' ? state.read : state.starred;
   const wasOn = set.has(id);
@@ -479,6 +496,50 @@ async function loadFlags() {
   });
 }
 
+async function markAllStoredArticlesRead() {
+  const unreadIds = state.entries
+    .filter(entry => !isRead(entry.id))
+    .map(entry => entry.id);
+  if (!unreadIds.length) return 0;
+
+  let d;
+  try {
+    d = await db();
+  } catch (err) {
+    throw new Error('could not open reading-state storage', { cause: err });
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = d.transaction('flags', 'readwrite');
+      const store = transaction.objectStore('flags');
+      for (const id of unreadIds) {
+        const request = store.get(id);
+        request.onsuccess = () => {
+          try {
+            const current = request.result || {};
+            current.read = true;
+            store.put(current, id);
+          } catch (err) {
+            reject(new Error(`could not update reading state for article ${id}`, { cause: err }));
+            transaction.abort();
+          }
+        };
+      }
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error('flags transaction failed'));
+      transaction.onabort = () => reject(transaction.error || new Error('flags transaction was aborted'));
+    });
+  } catch (err) {
+    throw new Error('could not persist the mark-all-read operation', { cause: err });
+  }
+
+  // Keep memory unchanged until the single transaction succeeds, so a storage
+  // failure cannot leave the UI claiming only part of the catalog was read.
+  for (const id of unreadIds) state.read.add(id);
+  return unreadIds.length;
+}
+
 // ------------------------------------------------------------------ views --
 
 function applyView() {
@@ -490,8 +551,8 @@ function applyView() {
   else if (kind === 'starred') list = list.filter(e => isStarred(e.id));
   else if (kind === 'unread') list = list.filter(e => !isRead(e.id));
   else if (kind === 'today') {
-    const cutoff = new Date(Date.now() - 864e5).toISOString();
-    list = list.filter(e => (e.disc || '') >= cutoff);
+    const cutoff = todayCutoff();
+    list = list.filter(e => isToday(e, cutoff));
   }
 
   const q = state.query.trim().toLowerCase();
@@ -544,17 +605,19 @@ function renderNav() {
   nav.textContent = '';
 
   const unread = state.entries.filter(e => !isRead(e.id)).length;
+  const cutoff = todayCutoff();
+  const today = state.entries.filter(entry => isToday(entry, cutoff)).length;
   const starred = state.starred.size;
   const groups = [
-    ['unread', 'Unread', unread],
-    ['today', 'Today', null],
-    ['starred', 'Starred', starred],
-    ['all', 'All', state.entries.length],
+    ['unread', 'Unread', unread, false],
+    ['today', 'Today', today, true],
+    ['starred', 'Starred', starred, false],
+    ['all', 'All', state.entries.length, false],
   ];
 
   const top = el('div', 'nav-group');
-  for (const [kind, label, count] of groups) {
-    top.appendChild(navRow({ kind, id: null }, label, count, null));
+  for (const [kind, label, count, showZero] of groups) {
+    top.appendChild(navRow({ kind, id: null }, label, count, null, { showZero }));
   }
   nav.appendChild(top);
 
@@ -584,7 +647,7 @@ function renderNav() {
   nav.appendChild(group);
 }
 
-function navRow(view, label, count, publisherId) {
+function navRow(view, label, count, publisherId, { showZero = false } = {}) {
   const row = el('button', 'nav-row');
   row.type = 'button';
   if (state.view.kind === view.kind && state.view.id === view.id) row.classList.add('active');
@@ -592,12 +655,14 @@ function navRow(view, label, count, publisherId) {
   const text = el('span', 'nav-label');
   text.textContent = label;
   row.appendChild(text);
-  if (count) {
+  if (count || showZero) {
     const badge = el('span', 'nav-count');
     badge.textContent = count > 999 ? '999+' : String(count);
     row.appendChild(badge);
   }
   row.addEventListener('click', () => {
+    const returnToTimeline = window.matchMedia(PHONE_LAYOUT).matches &&
+      document.body.classList.contains('reader-open');
     state.view = view;
     try {
       localStorage.setItem(LS.view, JSON.stringify(view));
@@ -606,6 +671,7 @@ function navRow(view, label, count, publisherId) {
     }
     document.body.classList.remove('sidebar-open');
     applyView();
+    if (returnToTimeline) navigateBackToList();
   });
   return row;
 }
@@ -1156,11 +1222,20 @@ function setOPMLStatus(message, kind = '') {
   if (kind) status.dataset.kind = kind; else delete status.dataset.kind;
 }
 
+function renderReadingSettings(message = '', kind = '') {
+  const status = $('#reading-status');
+  const unread = state.entries.filter(entry => !isRead(entry.id)).length;
+  status.textContent = message || `${unread} unread article${unread === 1 ? '' : 's'}`;
+  if (kind) status.dataset.kind = kind; else delete status.dataset.kind;
+  $('#mark-all-read-btn').disabled = unread === 0;
+}
+
 function setSettingsBusy(busy) {
   $('#opml-url').disabled = busy;
   $('#opml-save-btn').disabled = busy;
   $('#opml-default-btn').disabled = busy;
   $('#opml-download-btn').disabled = busy;
+  $('#mark-all-read-btn').disabled = busy || !state.entries.some(entry => !isRead(entry.id));
 }
 
 function openSettings() {
@@ -1168,6 +1243,7 @@ function openSettings() {
   const input = $('#opml-url');
   input.value = state.opmlUrl;
   renderSettingsPublishers();
+  renderReadingSettings();
   if (state.feedErrors.length) {
     setOPMLStatus(`${state.feedErrors.length} feed${state.feedErrors.length === 1 ? '' : 's'} could not be refreshed.`, 'error');
   } else {
@@ -1175,6 +1251,29 @@ function openSettings() {
   }
   const dialog = $('#settings-dialog');
   if (!dialog.open) dialog.showModal();
+}
+
+async function markAllReadFromSettings() {
+  setSettingsBusy(true);
+  renderReadingSettings('Marking all articles as read…');
+  try {
+    // Include any refresh that was already under way when the user opened the
+    // settings dialog, rather than immediately leaving its new articles unread.
+    if (refreshInFlight) await refreshInFlight;
+    const changed = await markAllStoredArticlesRead();
+    applyView();
+    renderReadingSettings(
+      changed
+        ? `Marked ${changed} article${changed === 1 ? '' : 's'} as read.`
+        : 'All articles were already read.',
+      'success'
+    );
+  } catch (err) {
+    console.error('Could not mark all articles as read.', err);
+    renderReadingSettings(errorDetail(err), 'error');
+  } finally {
+    setSettingsBusy(false);
+  }
 }
 
 async function saveOPMLSetting() {
@@ -1282,6 +1381,153 @@ function move(delta) {
     node.scrollIntoView({ block: 'nearest' });
   }
   return opening;
+}
+
+function swipeDelta(start, end) {
+  const dx = end.clientX - start.x;
+  const dy = end.clientY - start.y;
+  return {
+    dx,
+    dy,
+    horizontal: Math.abs(dx) >= SWIPE_DISTANCE && Math.abs(dx) > Math.abs(dy) * 1.25,
+    vertical: Math.abs(dy) >= SWIPE_DISTANCE && Math.abs(dy) > Math.abs(dx) * 1.25,
+  };
+}
+
+function wireTouchMode() {
+  const phoneLayout = window.matchMedia(PHONE_LAYOUT);
+  const coarsePointer = window.matchMedia(COARSE_POINTER);
+  const cards = $('#cards');
+  const readerScroll = $('#reader-scroll');
+  let touchMode = false;
+  let gesture = null;
+
+  const updateMode = () => {
+    touchMode = phoneLayout.matches &&
+      (coarsePointer.matches || navigator.maxTouchPoints > 0);
+    document.body.classList.toggle('touch-mode', touchMode);
+    if (!touchMode) gesture = null;
+  };
+
+  const watch = query => {
+    if (typeof query.addEventListener === 'function') {
+      query.addEventListener('change', updateMode);
+    } else if (typeof query.addListener === 'function') {
+      // Older iOS Safari exposes only the legacy MediaQueryList API.
+      query.addListener(updateMode);
+    }
+  };
+
+  updateMode();
+  watch(phoneLayout);
+  watch(coarsePointer);
+
+  document.addEventListener('touchstart', event => {
+    gesture = null;
+    if (!touchMode || event.touches.length !== 1 ||
+        document.querySelector('dialog[open]')) return;
+
+    const touch = event.touches[0];
+    const startedAt = performance.now();
+    if (touch.clientX <= EDGE_SWIPE_START) {
+      let kind = 'sidebar';
+      if (document.body.classList.contains('sidebar-open')) kind = 'blocked';
+      else if (document.body.classList.contains('reader-open')) kind = 'back';
+      gesture = {
+        kind,
+        x: touch.clientX,
+        y: touch.clientY,
+        startedAt,
+      };
+      return;
+    }
+
+    if (document.body.classList.contains('sidebar-open')) return;
+
+    if (!document.body.classList.contains('reader-open')) {
+      if (!event.target.closest('#cards')) return;
+      gesture = {
+        kind: 'timeline',
+        x: touch.clientX,
+        y: touch.clientY,
+        startedAt,
+        scrollTop: cards.scrollTop,
+      };
+      return;
+    }
+
+    if (!event.target.closest('#reader-scroll')) return;
+
+    gesture = {
+      kind: 'article',
+      x: touch.clientX,
+      y: touch.clientY,
+      startedAt,
+      scrollTop: readerScroll.scrollTop,
+    };
+  }, { passive: true });
+
+  document.addEventListener('touchmove', event => {
+    if (!gesture || event.touches.length !== 1) {
+      gesture = null;
+      return;
+    }
+
+    if (gesture.kind === 'timeline') {
+      const delta = swipeDelta(gesture, event.touches[0]);
+      // The timeline owns pull-to-refresh at its top edge. Prevent the browser
+      // from starting its own page refresh once that intent is unambiguous.
+      if (gesture.scrollTop <= 2 && delta.dy > 12 &&
+          Math.abs(delta.dy) > Math.abs(delta.dx)) event.preventDefault();
+    } else if (gesture.kind !== 'article') {
+      // Once an edge gesture is clearly horizontal, keep the browser's native
+      // history swipe from taking over the app's back/drawer gesture.
+      const delta = swipeDelta(gesture, event.touches[0]);
+      if (delta.dx > 12 && Math.abs(delta.dx) > Math.abs(delta.dy)) {
+        event.preventDefault();
+      }
+    }
+  }, { passive: false });
+
+  document.addEventListener('touchend', event => {
+    const completed = gesture;
+    gesture = null;
+    if (!completed || event.changedTouches.length !== 1 ||
+        performance.now() - completed.startedAt > SWIPE_DURATION) return;
+
+    const delta = swipeDelta(completed, event.changedTouches[0]);
+    if (completed.kind === 'timeline') {
+      if (delta.vertical && delta.dy > 0 &&
+          completed.scrollTop <= 2 && cards.scrollTop <= 2) {
+        setTimelineStatus('Refreshing…');
+        runAction(
+          refresh({ manual: true, throwOnFailure: true }),
+          'Could not refresh the feeds.'
+        );
+      }
+      return;
+    }
+
+    if (completed.kind !== 'article') {
+      if (delta.horizontal && delta.dx > 0) {
+        if (completed.kind === 'back') navigateBackToList();
+        else if (completed.kind === 'sidebar') document.body.classList.add('sidebar-open');
+      }
+      return;
+    }
+
+    // Ordinary article swipes must continue to scroll long content. Switching
+    // is therefore accepted only when the gesture could not move the scroller:
+    // down at the top, up at the bottom, or either direction for a short page.
+    if (!delta.vertical || Math.abs(readerScroll.scrollTop - completed.scrollTop) > 2) return;
+    if (delta.dy < 0) {
+      runAction(move(1), 'Could not open the next article.');
+    } else {
+      runAction(move(-1), 'Could not open the previous article.');
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchcancel', () => { gesture = null; }, { passive: true });
 }
 
 let readerWasOpenBeforeFocus = false;
@@ -1417,6 +1663,7 @@ function wireChrome() {
     setOPMLStatus('Default address restored in the field. Save to apply.');
   });
   $('#opml-download-btn').addEventListener('click', downloadOPML);
+  $('#mark-all-read-btn').addEventListener('click', markAllReadFromSettings);
 
   $('#theme-toggle').addEventListener('click', () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -1472,6 +1719,7 @@ async function performRefresh({ manual = false, source = null, throwOnFailure = 
     state.entries = sortEntries(entries);
     state.byId = new Map(state.entries.map(e => [e.id, e]));
     applyView();
+    if ($('#settings-dialog').open) renderReadingSettings();
     if ($('#settings-dialog').open && !source) {
       if (state.feedErrors.length) {
         setOPMLStatus(`${state.feedErrors.length} feed${state.feedErrors.length === 1 ? '' : 's'} could not be refreshed.`, 'error');
@@ -1497,6 +1745,7 @@ async function boot() {
   wireNavigationHistory();
   wireChrome();
   wireKeys();
+  wireTouchMode();
   state.opmlUrl = configuredOPMLURL();
 
   try {

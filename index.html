@@ -109,6 +109,14 @@ try {
     <p id="opml-status" class="opml-status" role="status" aria-live="polite"></p>
   </form>
 
+  <section class="reading-settings" aria-labelledby="reading-settings-title">
+    <div>
+      <h3 id="reading-settings-title">Reading state</h3>
+      <p id="reading-status" role="status" aria-live="polite">0 unread articles</p>
+    </div>
+    <button id="mark-all-read-btn" class="btn" type="button">Mark all read</button>
+  </section>
+
   <section class="publisher-settings" aria-labelledby="publisher-settings-title">
     <div class="publisher-settings-heading">
       <h3 id="publisher-settings-title">Publishers</h3>
@@ -131,6 +139,15 @@ try {
     <dt><kbd>⌘</kbd> <kbd>K</kbd></dt><dd>Search</dd>
     <dt><kbd>Esc</kbd></dt><dd>Back to the list</dd>
   </dl>
+  <section class="touch-help" aria-labelledby="touch-help-title">
+    <h2 id="touch-help-title">Touch</h2>
+    <dl>
+      <dt>Edge swipe right</dt><dd>Back to the list, or show publishers from the list</dd>
+      <dt>Pull down</dt><dd>Refresh the article list</dd>
+      <dt>Swipe up at end</dt><dd>Next article</dd>
+      <dt>Swipe down at start</dt><dd>Previous article</dd>
+    </dl>
+  </section>
   <form method="dialog"><button class="btn">Close</button></form>
 </dialog>
 

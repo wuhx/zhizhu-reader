@@ -103,10 +103,24 @@ and re-labels every past entry at once, with no change to any feed URL.
 
 Read, starred, the cached OPML, feed failures and per-feed ETags live in
 IndexedDB, on the device. The selected OPML address lives in local storage.
-Nothing is sent anywhere and there is no account.
+Nothing is sent anywhere and there is no account. The subscription settings
+include a **Mark all read** action, which updates every article stored on the
+device in one operation.
 
 Articles are keyed on the feed's `<guid>`, which is stable across a re-archive
 and across a change of link, so read and star flags survive both.
+
+## Phone gestures
+
+On a touch-capable screen up to 760 CSS pixels wide, the reader switches to its
+touch input mode and hides the list menu and article Back buttons. Swipe inward
+from the left edge to return from an article to its list; repeat the gesture on
+the list to open the publisher sidebar. Pull down from the top of an article
+list to refresh its feeds. Vertical article navigation applies only inside the
+article reader: continue swiping up at the end for the next article, or swipe
+down at the start for the previous one. Long articles keep their normal
+scrolling, and a short article accepts the same gestures in either direction
+without needing a scroll boundary.
 
 ## Working on it
 
